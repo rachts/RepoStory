@@ -19,3 +19,19 @@ export interface RepositoryFile {
   isAnalyzable: boolean;
   exclusionReason?: string;
 }
+
+export interface RepositoryReference {
+  owner: string;
+  name: string;
+  branch?: string;
+  url: string;
+}
+
+export interface RepositorySnapshot {
+  repository: Repository;
+  files: RepositoryFile[];
+}
+
+export interface RepositoryProvider {
+  getSnapshot(reference: RepositoryReference, signal?: AbortSignal): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
+}

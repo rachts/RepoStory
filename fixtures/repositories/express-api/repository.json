@@ -1,0 +1,12 @@
+{
+  "owner": "fixture",
+  "name": "express-api",
+  "repository": { "id": "fixture-express-api", "owner": "fixture", "name": "express-api", "url": "https://github.com/fixture/express-api", "defaultBranch": "main", "selectedBranch": "main", "description": "Express router fixture", "sizeBytes": 1700, "fileCount": 5 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 160, "content": "{\"dependencies\":{\"express\":\"5.0.0\"}}", "isAnalyzable": true },
+    { "path": "src/server.ts", "type": "file", "sizeBytes": 520, "content": "import express from \"express\";\nimport { Router } from \"express\";\nconst app = express();\nconst router = Router();\nconst adminRouter = Router();\napp.use(\"/api\", router);\nrouter.get(\"/users\", listUsers);\nrouter.post(\"/users\", createUser);\nrouter.use(\"/admin\", adminRouter);\nadminRouter.delete(\"/:id\", deleteUser);\napp.listen(3000);\n", "isAnalyzable": true },
+    { "path": "src/controllers/users.ts", "type": "file", "sizeBytes": 250, "content": "export function listUsers(_request: unknown, response: { json: (value: unknown) => void }) { response.json([]); }\nexport function createUser() {}\nexport function deleteUser() {}\n", "isAnalyzable": true },
+    { "path": "src/routes/health.ts", "type": "file", "sizeBytes": 170, "content": "import { Router } from \"express\";\nexport const healthRouter = Router();\nhealthRouter.get(\"/health\", (_request, response) => response.send(\"ok\"));\n", "isAnalyzable": true },
+    { "path": "README.md", "type": "file", "sizeBytes": 120, "content": "# Express API\n", "isAnalyzable": true }
+  ]
+}

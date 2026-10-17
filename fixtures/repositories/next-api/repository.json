@@ -1,0 +1,14 @@
+{
+  "owner": "fixture",
+  "name": "next-api",
+  "repository": { "id": "fixture-next-api", "owner": "fixture", "name": "next-api", "url": "https://github.com/fixture/next-api", "defaultBranch": "main", "selectedBranch": "main", "description": "Next.js API route fixture", "sizeBytes": 1500, "fileCount": 7 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 180, "content": "{\"dependencies\":{\"next\":\"16.0.0\",\"react\":\"19.0.0\"}}", "isAnalyzable": true },
+    { "path": "src/app/api/users/route.ts", "type": "file", "sizeBytes": 260, "content": "export async function GET() { return Response.json({ users: [] }); }\nexport async function POST(request: Request) { return Response.json({ created: true }); }\n", "isAnalyzable": true },
+    { "path": "src/app/api/users/[id]/route.ts", "type": "file", "sizeBytes": 170, "content": "export async function DELETE() { return new Response(null, { status: 204 }); }\n", "isAnalyzable": true },
+    { "path": "src/pages/api/legacy.ts", "type": "file", "sizeBytes": 260, "content": "import type { NextApiRequest, NextApiResponse } from \"next\";\nexport default function handler(req: NextApiRequest, res: NextApiResponse) {\n  if (req.method === \"GET\") return res.status(200).json([]);\n  if (req.method === \"POST\") return res.status(201).json({ created: true });\n  return res.status(405).end();\n}\n", "isAnalyzable": true },
+    { "path": "src/lib/users.ts", "type": "file", "sizeBytes": 110, "content": "export function listUsers() { return []; }\n", "isAnalyzable": true },
+    { "path": "src/app/api/users/service.ts", "type": "file", "sizeBytes": 150, "content": "import { listUsers } from \"@/lib/users\";\nexport const loadUsers = () => listUsers();\n", "isAnalyzable": true },
+    { "path": "src/app/page.tsx", "type": "file", "sizeBytes": 90, "content": "export default function Page() { return <main>API fixture</main>; }\n", "isAnalyzable": true }
+  ]
+}

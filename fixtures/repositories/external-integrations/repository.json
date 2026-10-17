@@ -1,0 +1,12 @@
+{
+  "owner": "fixture",
+  "name": "external-integrations",
+  "repository": { "id": "fixture-external-integrations", "owner": "fixture", "name": "external-integrations", "url": "https://github.com/fixture/external-integrations", "defaultBranch": "main", "selectedBranch": "main", "description": "External client evidence fixture", "sizeBytes": 2200, "fileCount": 5 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 300, "content": "{\"dependencies\":{\"stripe\":\"18.0.0\",\"openai\":\"5.0.0\",\"@sendgrid/mail\":\"8.1.0\",\"@sentry/nextjs\":\"9.0.0\"}}", "isAnalyzable": true },
+    { "path": "src/lib/clients.ts", "type": "file", "sizeBytes": 470, "content": "import Stripe from \"stripe\";\nimport OpenAI from \"openai\";\nimport sgMail from \"@sendgrid/mail\";\nimport * as Sentry from \"@sentry/nextjs\";\nexport const payments = new Stripe(process.env.PAYMENTS_KEY ?? \"\");\nexport const ai = new OpenAI();\nsgMail.setApiKey(process.env.MAIL_KEY ?? \"\");\nSentry.init({ dsn: process.env.SENTRY_DSN });\n", "isAnalyzable": true },
+    { "path": "src/lib/catalog.ts", "type": "file", "sizeBytes": 190, "content": "export async function loadCatalog() { return fetch(\"https://api.example.test/catalog\"); }\n", "isAnalyzable": true },
+    { "path": "src/app/page.tsx", "type": "file", "sizeBytes": 90, "content": "export default function Page() { return <main>Integrations</main>; }\n", "isAnalyzable": true },
+    { "path": "README.md", "type": "file", "sizeBytes": 100, "content": "# External integrations\n", "isAnalyzable": true }
+  ]
+}

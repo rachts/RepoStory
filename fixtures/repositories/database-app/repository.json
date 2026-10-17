@@ -1,0 +1,14 @@
+{
+  "owner": "fixture",
+  "name": "database-app",
+  "repository": { "id": "fixture-database-app", "owner": "fixture", "name": "database-app", "url": "https://github.com/fixture/database-app", "defaultBranch": "main", "selectedBranch": "main", "description": "Database evidence fixture", "sizeBytes": 2500, "fileCount": 7 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 300, "content": "{\"dependencies\":{\"@prisma/client\":\"6.0.0\",\"drizzle-orm\":\"0.40.0\",\"pg\":\"8.13.0\"},\"devDependencies\":{\"prisma\":\"6.0.0\",\"drizzle-kit\":\"0.30.0\"}}", "isAnalyzable": true },
+    { "path": "prisma/schema.prisma", "type": "file", "sizeBytes": 300, "content": "datasource db { provider = \"postgresql\" url = env(\"DATABASE_URL\") }\nmodel User { id Int @id name String }\n", "isAnalyzable": true },
+    { "path": "src/db/client.ts", "type": "file", "sizeBytes": 230, "content": "import { PrismaClient } from \"@prisma/client\";\nexport const prisma = new PrismaClient();\n", "isAnalyzable": true },
+    { "path": "src/db/drizzle.ts", "type": "file", "sizeBytes": 260, "content": "import { drizzle } from \"drizzle-orm/node-postgres\";\nimport { Pool } from \"pg\";\nconst pool = new Pool();\nexport const db = drizzle(pool);\n", "isAnalyzable": true },
+    { "path": "migrations/001_create_users.sql", "type": "file", "sizeBytes": 180, "content": "CREATE TABLE users (id integer primary key, name text not null);\nCREATE INDEX users_name_idx ON users(name);\n", "isAnalyzable": true },
+    { "path": "src/repositories/users.ts", "type": "file", "sizeBytes": 150, "content": "import { prisma } from \"@/db/client\";\nexport const findUsers = () => prisma.user.findMany();\n", "isAnalyzable": true },
+    { "path": "README.md", "type": "file", "sizeBytes": 100, "content": "# Database app\n", "isAnalyzable": true }
+  ]
+}
