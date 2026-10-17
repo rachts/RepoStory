@@ -1,0 +1,12 @@
+{
+  "owner": "fixture",
+  "name": "small-react",
+  "repository": { "id": "fixture-small-react", "owner": "fixture", "name": "small-react", "url": "https://github.com/fixture/small-react", "defaultBranch": "main", "selectedBranch": "main", "description": "Small React fixture", "sizeBytes": 1200, "fileCount": 5 },
+  "files": [
+    { "path": "README.md", "type": "file", "sizeBytes": 80, "content": "# Small React\n", "isAnalyzable": true },
+    { "path": "package.json", "type": "file", "sizeBytes": 180, "content": "{\"dependencies\":{\"react\":\"19.0.0\",\"next\":\"16.0.0\"}}", "isAnalyzable": true },
+    { "path": "tsconfig.json", "type": "file", "sizeBytes": 100, "content": "{\"compilerOptions\":{\"strict\":true}}", "isAnalyzable": true },
+    { "path": "src/app/page.tsx", "type": "file", "sizeBytes": 120, "content": "export default function Page() { return <main>Hello</main>; }\n", "isAnalyzable": true },
+    { "path": "src/components/Greeting.tsx", "type": "file", "sizeBytes": 120, "content": "export function Greeting() { return <p>Hello</p>; }\n", "isAnalyzable": true }
+  ]
+}

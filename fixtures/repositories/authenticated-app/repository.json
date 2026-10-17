@@ -1,0 +1,14 @@
+{
+  "owner": "fixture",
+  "name": "authenticated-app",
+  "repository": { "id": "fixture-authenticated-app", "owner": "fixture", "name": "authenticated-app", "url": "https://github.com/fixture/authenticated-app", "defaultBranch": "main", "selectedBranch": "main", "description": "Authentication evidence fixture", "sizeBytes": 2100, "fileCount": 7 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 240, "content": "{\"dependencies\":{\"next\":\"16.0.0\",\"next-auth\":\"5.0.0\",\"jose\":\"6.0.0\"}}", "isAnalyzable": true },
+    { "path": "src/auth.ts", "type": "file", "sizeBytes": 260, "content": "import NextAuth from \"next-auth\";\nexport const { handlers, auth } = NextAuth({ providers: [] });\n", "isAnalyzable": true },
+    { "path": "src/middleware.ts", "type": "file", "sizeBytes": 220, "content": "import { auth } from \"@/auth\";\nexport default auth((request) => { if (!request.auth) return Response.redirect(new URL(\"/login\", request.url)); });\n", "isAnalyzable": true },
+    { "path": "src/app/api/auth/[...nextauth]/route.ts", "type": "file", "sizeBytes": 150, "content": "export { GET, POST } from \"@/auth\";\n", "isAnalyzable": true },
+    { "path": "src/lib/token.ts", "type": "file", "sizeBytes": 240, "content": "import { jwtVerify } from \"jose\";\nexport async function verifyToken(token: string) { return jwtVerify(token, new Uint8Array()); }\n", "isAnalyzable": true },
+    { "path": "src/app/api/private/route.ts", "type": "file", "sizeBytes": 180, "content": "import { auth } from \"@/auth\";\nexport const GET = auth(() => Response.json({ ok: true }));\n", "isAnalyzable": true },
+    { "path": "src/app/page.tsx", "type": "file", "sizeBytes": 90, "content": "export default function Page() { return <main>Private app</main>; }\n", "isAnalyzable": true }
+  ]
+}

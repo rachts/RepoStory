@@ -1,4 +1,5 @@
-import type { AnalysisFinding, ConfidenceLevel } from "@/domain/finding";
+import type { AnalysisFinding, ApiRouteFinding, AuthenticationFinding, DatabaseFinding, ExternalIntegrationFinding, ConfidenceLevel, ModuleRelationship } from "@/domain/finding";
+import type { DiagramType } from "@/domain/diagram";
 import type { Repository, RepositoryFile } from "@/domain/repository";
 
 export type AnalysisStatus =
@@ -27,10 +28,24 @@ export interface AnalysisJob {
   filesAnalyzed: number;
   technologies: AnalysisFinding[];
   findings: AnalysisFinding[];
+  apiRoutes?: ApiRouteFinding[];
+  moduleRelationships?: ModuleRelationship[];
+  databases?: DatabaseFinding[];
+  externalIntegrations?: ExternalIntegrationFinding[];
+  authentication?: AuthenticationFinding[];
+  diagramAvailability?: DiagramAvailability[];
   diagramIds: string[];
   error?: AnalysisError;
   createdAt: string;
   completedAt?: string;
+  diagrams?: import("@/domain/diagram").Diagram[];
+}
+
+export interface DiagramAvailability {
+  type: DiagramType;
+  available: boolean;
+  confidence?: ConfidenceLevel;
+  reason?: string;
 }
 
 export interface AnalysisInput {
@@ -47,6 +62,16 @@ export interface AnalysisError {
     | "REPOSITORY_TOO_LARGE"
     | "FILE_LIMIT_EXCEEDED"
     | "GITHUB_RATE_LIMITED"
+    | "GITHUB_TREE_TRUNCATED"
+    | "GITHUB_RESPONSE_TOO_LARGE"
+    | "GITHUB_INVALID_RESPONSE"
+    | "GITHUB_INVALID_CONTENT"
+    | "GITHUB_CONTENT_TOO_LARGE"
+    | "GITHUB_INVALID_PATH"
+    | "GITHUB_PATH_TOO_LONG"
+    | "GITHUB_RESPONSE_READ_FAILED"
+    | "INVALID_BRANCH"
+    | "ANALYSIS_TIMEOUT"
     | "ANALYSIS_FAILED"
     | "CANCELLED";
   message: string;

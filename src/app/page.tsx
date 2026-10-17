@@ -1,33 +1,95 @@
-export default function Home() {
+"use client";
+
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
+import Link from "next/link";
+
+const exampleRepository = "https://github.com/facebook/react";
+
+export default function Home(): React.JSX.Element {
+  const router = useRouter();
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const validateUrl = (value: string): string => {
+    try {
+      const parsed = new URL(value.trim());
+      if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
+        return "Paste a public github.com repository URL.";
+      }
+      const parts = parsed.pathname.split("/").filter(Boolean);
+      if (parts.length < 2) return "Include both the repository owner and name.";
+      return "";
+    } catch {
+      return "Enter a valid GitHub URL, such as https://github.com/owner/repo.";
+    }
+  };
+
+  const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault();
+    const validationError = validateUrl(url);
+    setError(validationError);
+    if (validationError) return;
+    setIsSubmitting(true);
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ repositoryUrl: url.trim() }),
+      });
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
+        throw new Error(payload?.error?.message ?? "The repository could not be analyzed.");
+      }
+      const payload = (await response.json()) as { analysisId?: string };
+      if (!payload.analysisId) throw new Error("The analysis response was incomplete.");
+      router.push(`/analysis/${encodeURIComponent(payload.analysisId)}`);
+    } catch (submissionError) {
+      setError(submissionError instanceof Error ? submissionError.message : "Something went wrong. Try again.");
+      setIsSubmitting(false);
+    }
+  };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center px-6 py-16">
-      <div className="w-full max-w-3xl rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-8 shadow-sm sm:p-12">
-        <p className="mb-6 font-mono text-sm font-semibold uppercase tracking-[0.18em] text-[var(--accent)]">
-          RepoStory / Phase 0
-        </p>
-        <h1 className="max-w-2xl text-4xl font-semibold tracking-tight sm:text-6xl">
-          Turn any GitHub repository into a story people can understand.
-        </h1>
-        <p className="mt-6 max-w-2xl text-lg leading-8 text-[var(--muted)]">
-          The foundation is ready for evidence-backed architecture and workflow
-          diagrams, built for README files, presentations, and project
-          explanations.
-        </p>
-        <div className="mt-10 flex flex-wrap items-center gap-3">
-          <span className="rounded-full bg-[var(--accent-soft)] px-3 py-1 text-sm font-medium text-[var(--accent-strong)]">
-            Strict TypeScript
-          </span>
-          <span className="rounded-full border border-[var(--border)] px-3 py-1 text-sm text-[var(--muted)]">
-            Next.js App Router
-          </span>
-          <span className="rounded-full border border-[var(--border)] px-3 py-1 text-sm text-[var(--muted)]">
-            Docker-ready
-          </span>
+    <main className="landing-page">
+      <header className="site-header page-width">
+        <Link className="brand" href="/" aria-label="RepoStory home"><span className="brand-mark">R</span> RepoStory</Link>
+        <span className="header-note"><span className="status-dot" /> Evidence-backed repository stories</span>
+      </header>
+
+      <section className="hero page-width">
+        <div className="hero-copy">
+          <p className="eyebrow"><span className="eyebrow-line" /> Repository intelligence</p>
+          <h1>Make your codebase <em>make sense.</em></h1>
+          <p className="hero-lede">RepoStory turns a public GitHub repository into a clear, evidence-backed story your whole team can follow.</p>
+          <form className="repo-form" onSubmit={submit} noValidate>
+            <label htmlFor="repository-url">Public GitHub repository URL</label>
+            <div className={`input-row ${error ? "has-error" : ""}`}>
+              <span className="input-prefix" aria-hidden="true">↗</span>
+              <input id="repository-url" type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(""); }} placeholder="https://github.com/owner/repository" disabled={isSubmitting} aria-invalid={Boolean(error)} />
+              <button className="primary-button" type="submit" disabled={isSubmitting}>{isSubmitting ? <><span className="spinner" /> Reading…</> : <>Tell the story <span>→</span></>}</button>
+            </div>
+            {error ? <p className="form-error" role="alert"><span>!</span>{error}</p> : <p className="form-hint">Public repositories only · No token required</p>}
+          </form>
+          <button className="example-link" type="button" onClick={() => setUrl(exampleRepository)}>Try an example <span>↗</span></button>
         </div>
-      </div>
-      <p className="mt-6 text-sm text-[var(--muted)]">
-        Phase 0 smoke route: <code className="font-mono">/api/health</code>
-      </p>
+        <div className="hero-visual" aria-label="Abstract repository map illustration">
+          <div className="orbit orbit-one" /><div className="orbit orbit-two" />
+          <div className="map-card map-card-main"><span className="map-icon">✦</span><strong>your-repository</strong><small>system overview</small></div>
+          <div className="map-card map-card-frontend"><span className="map-icon blue">◒</span><strong>frontend</strong><small>components / routes</small></div>
+          <div className="map-card map-card-data"><span className="map-icon orange">▦</span><strong>data layer</strong><small>models / persistence</small></div>
+          <div className="map-node node-a" /><div className="map-node node-b" /><div className="map-node node-c" />
+          <svg className="map-lines" viewBox="0 0 440 360" aria-hidden="true"><path d="M220 180 C220 112 112 105 82 72" /><path d="M220 180 C300 120 350 137 362 102" /><path d="M220 180 C180 250 120 282 95 312" /><path d="M220 180 C286 235 340 263 372 300" /></svg>
+        </div>
+      </section>
+
+      <section className="steps page-width" aria-labelledby="how-it-works"><div className="section-rule" /><p className="eyebrow" id="how-it-works"><span className="eyebrow-line" /> From repository to story</p><div className="step-grid"><Step number="01" title="Point to a repo" body="Share a public GitHub URL. We read the structure, not your secrets." /><Step number="02" title="We find the signal" body="Files, entry points, technologies, and connections become evidence." /><Step number="03" title="Get the story" body="Explore diagrams in technical detail or plain English, then take them with you." /></div></section>
+      <footer className="site-footer page-width"><span>RepoStory / Phase 3</span><span>Built for clarity</span></footer>
     </main>
   );
+}
+
+function Step({ number, title, body }: { number: string; title: string; body: string }): React.JSX.Element {
+  return <article className="step"><span className="step-number">{number}</span><h2>{title}</h2><p>{body}</p></article>;
 }

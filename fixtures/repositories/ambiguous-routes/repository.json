@@ -1,0 +1,11 @@
+{
+  "owner": "fixture",
+  "name": "ambiguous-routes",
+  "repository": { "id": "fixture-ambiguous-routes", "owner": "fixture", "name": "ambiguous-routes", "url": "https://github.com/fixture/ambiguous-routes", "defaultBranch": "main", "selectedBranch": "main", "description": "Ambiguous route fixture", "sizeBytes": 900, "fileCount": 4 },
+  "files": [
+    { "path": "package.json", "type": "file", "sizeBytes": 110, "content": "{\"dependencies\":{\"next\":\"16.0.0\"}}", "isAnalyzable": true },
+    { "path": "src/app/api/report/route.ts", "type": "file", "sizeBytes": 170, "content": "export default function handler(request: Request) { return Response.json({ ok: true }); }\n", "isAnalyzable": true },
+    { "path": "src/pages/api/legacy.ts", "type": "file", "sizeBytes": 150, "content": "export default function handler(_request: unknown, response: { end: () => void }) { response.end(); }\n", "isAnalyzable": true },
+    { "path": "src/misc/example.ts", "type": "file", "sizeBytes": 190, "content": "// This documentation string mentions router.get('/not-a-route').\nconst example = \"app.post('/also-not-a-route')\";\nexport { example };\n", "isAnalyzable": true }
+  ]
+}
