@@ -6,29 +6,87 @@ import Link from "next/link";
 
 const exampleRepository = "https://github.com/facebook/react";
 
+function hasTraversalSegment(segment: string): boolean {
+  if (segment === "." || segment === "..") return true;
+
+  let candidate = segment;
+  for (let attempt = 0; attempt < 2 && candidate.includes("%"); attempt += 1) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(candidate);
+    } catch {
+      return false;
+    }
+    if (decoded === candidate) return false;
+    candidate = decoded;
+    if (candidate === "." || candidate === "..") return true;
+  }
+  return false;
+}
+
+function extractRawPath(input: string): string {
+  const schemeEnd = input.indexOf("://");
+  const authorityStart = schemeEnd + 3;
+  const pathStart = input.indexOf("/", authorityStart);
+  if (pathStart === -1) return "/";
+  return input.slice(pathStart);
+}
+
+function validateRepositoryUrl(value: string): string {
+  const rawValue = value.trim();
+  try {
+    const parsed = new URL(rawValue);
+    if (
+      parsed.protocol !== "https:" ||
+      parsed.hostname.toLowerCase() !== "github.com" ||
+      parsed.port ||
+      parsed.username ||
+      parsed.password ||
+      parsed.search ||
+      parsed.hash ||
+      rawValue.includes("?") ||
+      rawValue.includes("#")
+    ) {
+      return "Paste a public github.com repository URL.";
+    }
+
+    let decodedPath: string;
+    try {
+      decodedPath = decodeURIComponent(extractRawPath(rawValue));
+    } catch {
+      return "The repository URL contains invalid URL encoding.";
+    }
+
+    if (!decodedPath.startsWith("/") || decodedPath.includes("\\")) {
+      return "Enter a valid GitHub repository URL.";
+    }
+
+    const parts = decodedPath.split("/");
+    if (parts[0] === "") parts.shift();
+    if (parts.length === 3 && parts[2] === "") parts.pop();
+    if (parts.length < 2 || parts.some((part) => part.length === 0 || hasTraversalSegment(part))) {
+      return "Include both the repository owner and name.";
+    }
+
+    const [, , kind] = parts;
+    if (parts.length > 2 && (kind !== "tree" || parts.length < 4)) {
+      return "Use a repository URL or an optional /tree/{branch} URL.";
+    }
+    return "";
+  } catch {
+    return "Enter a valid GitHub URL, such as https://github.com/owner/repo.";
+  }
+}
+
 export default function Home(): React.JSX.Element {
   const router = useRouter();
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const validateUrl = (value: string): string => {
-    try {
-      const parsed = new URL(value.trim());
-      if (parsed.protocol !== "https:" || parsed.hostname !== "github.com") {
-        return "Paste a public github.com repository URL.";
-      }
-      const parts = parsed.pathname.split("/").filter(Boolean);
-      if (parts.length < 2) return "Include both the repository owner and name.";
-      return "";
-    } catch {
-      return "Enter a valid GitHub URL, such as https://github.com/owner/repo.";
-    }
-  };
-
   const submit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
-    const validationError = validateUrl(url);
+    const validationError = validateRepositoryUrl(url);
     setError(validationError);
     if (validationError) return;
     setIsSubmitting(true);
@@ -47,6 +105,7 @@ export default function Home(): React.JSX.Element {
       router.push(`/analysis/${encodeURIComponent(payload.analysisId)}`);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : "Something went wrong. Try again.");
+    } finally {
       setIsSubmitting(false);
     }
   };
@@ -63,18 +122,18 @@ export default function Home(): React.JSX.Element {
           <p className="eyebrow"><span className="eyebrow-line" /> Repository intelligence</p>
           <h1>Make your codebase <em>make sense.</em></h1>
           <p className="hero-lede">RepoStory turns a public GitHub repository into a clear, evidence-backed story your whole team can follow.</p>
-          <form className="repo-form" onSubmit={submit} noValidate>
+          <form className="repo-form" onSubmit={submit} noValidate aria-busy={isSubmitting}>
             <label htmlFor="repository-url">Public GitHub repository URL</label>
             <div className={`input-row ${error ? "has-error" : ""}`}>
               <span className="input-prefix" aria-hidden="true">↗</span>
-              <input id="repository-url" type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(""); }} placeholder="https://github.com/owner/repository" disabled={isSubmitting} aria-invalid={Boolean(error)} />
+              <input id="repository-url" type="url" value={url} onChange={(event) => { setUrl(event.target.value); setError(""); }} placeholder="https://github.com/owner/repository" disabled={isSubmitting} aria-invalid={Boolean(error)} aria-describedby={error ? "repository-url-error" : "repository-url-hint"} />
               <button className="primary-button" type="submit" disabled={isSubmitting}>{isSubmitting ? <><span className="spinner" /> Reading…</> : <>Tell the story <span>→</span></>}</button>
             </div>
-            {error ? <p className="form-error" role="alert"><span>!</span>{error}</p> : <p className="form-hint">Public repositories only · No token required</p>}
+            {error ? <p id="repository-url-error" className="form-error" role="alert"><span aria-hidden="true">!</span>{error}</p> : <p id="repository-url-hint" className="form-hint">Public repositories only · No token required</p>}
           </form>
           <button className="example-link" type="button" onClick={() => setUrl(exampleRepository)}>Try an example <span>↗</span></button>
         </div>
-        <div className="hero-visual" aria-label="Abstract repository map illustration">
+        <div className="hero-visual" role="img" aria-label="Abstract repository map illustration">
           <div className="orbit orbit-one" /><div className="orbit orbit-two" />
           <div className="map-card map-card-main"><span className="map-icon">✦</span><strong>your-repository</strong><small>system overview</small></div>
           <div className="map-card map-card-frontend"><span className="map-icon blue">◒</span><strong>frontend</strong><small>components / routes</small></div>

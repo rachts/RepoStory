@@ -36,6 +36,8 @@ export interface DiagramEdge {
   label: string;
   explanation?: string;
   visible: boolean;
+  /** Inferred relationships render as dashed lines in visual and Mermaid views. */
+  inferred?: boolean;
   confidence: ConfidenceLevel;
   evidence: EvidenceReference[];
 }

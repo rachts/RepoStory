@@ -183,7 +183,7 @@ export function moduleAliases(files: RepositoryFile[], budget?: AnalysisBudget):
   return aliases;
 }
 
-function normalizeModulePath(path: string): string {
+export function normalizeModulePath(path: string): string {
   const parts: string[] = [];
   for (const part of normalizePath(path).split("/")) {
     if (!part || part === ".") continue;
@@ -195,12 +195,40 @@ function normalizeModulePath(path: string): string {
 
 function moduleCandidates(basePath: string): string[] {
   const extension = MODULE_EXTENSIONS.find((item) => basePath.endsWith(item));
-  if (extension) return [basePath, `${basePath}/index${extension}`];
-  return [basePath, ...MODULE_EXTENSIONS.map((item) => `${basePath}${item}`), ...MODULE_EXTENSIONS.map((item) => `${basePath}/index${item}`)];
+  if (!extension) return [basePath, ...MODULE_EXTENSIONS.map((item) => `${basePath}${item}`), ...MODULE_EXTENSIONS.map((item) => `${basePath}/index${item}`)];
+
+  // TypeScript projects commonly publish/import `.js` specifiers while the
+  // repository still contains the corresponding `.ts` source file. Prefer an
+  // exact match, then the source-language equivalents, without changing the
+  // normal extensionless resolution order.
+  const extensionAliases: Record<string, readonly string[]> = {
+    ".js": [".js", ".ts", ".tsx", ".jsx", ".mjs", ".mts", ".cjs", ".cts"],
+    ".jsx": [".jsx", ".tsx", ".js", ".ts"],
+    ".mjs": [".mjs", ".mts", ".js", ".ts"],
+    ".cjs": [".cjs", ".cts", ".js", ".ts"],
+    ".ts": [".ts", ".tsx"],
+    ".tsx": [".tsx", ".ts"],
+    ".mts": [".mts", ".cts", ".mjs", ".js"],
+    ".cts": [".cts", ".mts", ".cjs", ".js"],
+    ".json": [".json"],
+  };
+  const stem = basePath.slice(0, -extension.length);
+  const candidates = new Set<string>();
+  for (const candidateExtension of extensionAliases[extension] ?? [extension]) candidates.add(`${stem}${candidateExtension}`);
+  for (const candidateExtension of extensionAliases[extension] ?? [extension]) candidates.add(`${stem}/index${candidateExtension}`);
+  return [...candidates];
 }
 
 export function resolveLocalModule(sourcePath: string, specifier: string, knownPaths: Set<string>, aliases: ModuleAlias[] = [], budget?: AnalysisBudget): { targetPath: string; confidence: "high" | "medium" } | null {
-  const normalizedSpecifier = normalizePath(specifier.trim());
+  // Preserve a leading `./`: normalizePath intentionally removes it for file
+  // paths, but it is the signal that distinguishes a relative import from an
+  // alias or package specifier.
+  const normalizedSpecifier = specifier.trim().replaceAll("\\", "/");
+  const normalizedKnownPaths = new Set<string>();
+  for (const knownPath of knownPaths) {
+    budget?.check();
+    normalizedKnownPaths.add(normalizeModulePath(knownPath));
+  }
   let basePath: string;
   let confidence: "high" | "medium";
   if (normalizedSpecifier.startsWith("./") || normalizedSpecifier.startsWith("../")) {
@@ -218,15 +246,21 @@ export function resolveLocalModule(sourcePath: string, specifier: string, knownP
     basePath = normalizeModulePath(normalizedSpecifier);
     confidence = "medium";
   } else {
-    let alias: ModuleAlias | undefined;
+    const matchingAliases: ModuleAlias[] = [];
     for (const candidate of aliases) {
       budget?.check();
       const pattern = normalizePath(candidate.pattern);
-      if (pattern.endsWith("/*") ? normalizedSpecifier.startsWith(pattern.slice(0, -1)) : normalizedSpecifier === pattern) {
-        alias = candidate;
-        break;
-      }
+      if (pattern.endsWith("/*") ? normalizedSpecifier.startsWith(pattern.slice(0, -1)) : normalizedSpecifier === pattern) matchingAliases.push(candidate);
     }
+    matchingAliases.sort((left, right) => {
+      budget?.check();
+      const leftPattern = normalizePath(left.pattern);
+      const rightPattern = normalizePath(right.pattern);
+      const leftWildcard = leftPattern.endsWith("/*");
+      const rightWildcard = rightPattern.endsWith("/*");
+      return Number(leftWildcard) - Number(rightWildcard) || rightPattern.length - leftPattern.length || leftPattern.localeCompare(rightPattern);
+    });
+    const alias = matchingAliases[0];
     if (!alias) return null;
     const pattern = normalizePath(alias.pattern);
     const target = normalizePath(alias.target);
@@ -238,7 +272,7 @@ export function resolveLocalModule(sourcePath: string, specifier: string, knownP
 
   for (const candidate of moduleCandidates(basePath)) {
     budget?.check();
-    if (knownPaths.has(candidate)) return { targetPath: candidate, confidence };
+    if (normalizedKnownPaths.has(candidate)) return { targetPath: candidate, confidence };
   }
   return null;
 }

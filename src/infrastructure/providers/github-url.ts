@@ -3,6 +3,7 @@ import type { RepositoryReference } from "@/domain/repository";
 import { err, ok, type Result } from "@/shared/result";
 
 const INVALID_REPOSITORY_URL = "Expected https://github.com/{owner}/{repository}[/tree/{branch}].";
+const MAX_BRANCH_BYTES = 255;
 
 function invalidUrl(message = "Invalid GitHub repository URL."): Result<RepositoryReference, AppError> {
   return err(new AppError({ code: "INVALID_URL", message }));
@@ -41,8 +42,12 @@ export function validateGitHubBranch(branch: string): Result<string, AppError> {
     return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot be empty." }));
   }
 
+  if (Buffer.byteLength(branch, "utf8") > MAX_BRANCH_BYTES) {
+    return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot exceed 255 bytes." }));
+  }
+
   const segments = branch.split("/");
-  if (branch.includes("\\") || segments.some((segment) => segment.length === 0 || hasTraversalSegment(segment))) {
+  if (branch.includes("\\") || /[\u0000-\u001f\u007f?#]/.test(branch) || branch.includes("..") || segments.some((segment) => segment.length === 0 || hasTraversalSegment(segment))) {
     return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot contain empty or traversal segments." }));
   }
   return ok(branch);

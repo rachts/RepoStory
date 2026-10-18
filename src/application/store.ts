@@ -10,6 +10,8 @@ export interface InMemoryAnalysisStoreOptions {
 }
 
 export interface AnalysisStore {
+  startAnalysis?(id: string): void;
+  finishAnalysis?(id: string): void;
   save(job: AnalysisJob): void;
   get(id: string): AnalysisJob | undefined;
   update(job: AnalysisJob): void;
@@ -25,6 +27,8 @@ export class InMemoryAnalysisStore implements AnalysisStore {
   private readonly diagrams = new Map<string, Diagram>();
   private readonly generatedDiagrams = new Map<string, Diagram>();
   private readonly entries = new Map<string, { lastAccessed: number; expiresAt: number }>();
+  private readonly activeAnalysisIds = new Set<string>();
+  private readonly retiredAnalysisIds = new Set<string>();
   private readonly maxAnalyses: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -51,6 +55,7 @@ export class InMemoryAnalysisStore implements AnalysisStore {
   }
 
   private removeAnalysis(id: string): void {
+    if (this.activeAnalysisIds.has(id)) this.retiredAnalysisIds.add(id);
     this.entries.delete(id);
     this.jobs.delete(id);
     for (const [diagramId, diagram] of this.diagrams) {
@@ -62,8 +67,19 @@ export class InMemoryAnalysisStore implements AnalysisStore {
 
   public save(job: AnalysisJob): void {
     this.purgeExpired();
+    if (this.retiredAnalysisIds.has(job.id)) return;
     this.touch(job.id);
     this.jobs.set(job.id, structuredClone(redactPathValues(job)));
+  }
+
+  public startAnalysis(id: string): void {
+    this.activeAnalysisIds.add(id);
+    this.retiredAnalysisIds.delete(id);
+  }
+
+  public finishAnalysis(id: string): void {
+    this.activeAnalysisIds.delete(id);
+    this.retiredAnalysisIds.delete(id);
   }
 
   public update(job: AnalysisJob): void {
@@ -79,6 +95,7 @@ export class InMemoryAnalysisStore implements AnalysisStore {
 
   public saveDiagram(diagram: Diagram): void {
     this.purgeExpired();
+    if (this.retiredAnalysisIds.has(diagram.analysisId)) return;
     this.touch(diagram.analysisId);
     const safeDiagram = redactPathValues(diagram);
     if (!this.generatedDiagrams.has(diagram.id)) this.generatedDiagrams.set(diagram.id, structuredClone(safeDiagram));
