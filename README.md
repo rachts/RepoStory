@@ -409,6 +409,10 @@ authentication system.
 - **Server-side GitHub access.** GitHub requests are made by the provider used
   by the Next.js route handler. `GITHUB_TOKEN` is read from server-side
   environment configuration and is not part of the browser request body.
+- **Browser and response hardening.** The Next.js configuration disables the
+  framework signature and sends `nosniff`, same-origin framing/resource policies,
+  a strict referrer policy, a restrictive permissions policy, and cross-origin
+  opener isolation. API and liveness responses use `Cache-Control: no-store`.
 - **Fixed upstream host.** The provider constructs requests against
   `https://api.github.com`; the submitted repository URL is not used as an
   arbitrary fetch target.
@@ -883,6 +887,12 @@ The following limitations are visible in the current codebase:
   README update.
 - **Heuristic secret handling.** The redaction rules are defense-in-depth
   patterns, not a guarantee that every possible secret format is detected.
+- **Development-tool audit note.** `npm audit --omit=dev --audit-level=high`
+  reports no production dependency vulnerabilities. A full audit still reports
+  the unresolved `braces` advisory through the Next.js ESLint configuration;
+  `npm audit fix --force` would downgrade `eslint-config-next` across major
+  versions, so it is not applied. Revisit this when the upstream lint dependency
+  publishes a fixed release.
 
 ## Roadmap
 

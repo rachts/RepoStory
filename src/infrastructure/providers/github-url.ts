@@ -5,6 +5,17 @@ import { err, ok, type Result } from "@/shared/result";
 const INVALID_REPOSITORY_URL = "Expected https://github.com/{owner}/{repository}[/tree/{branch}].";
 const MAX_BRANCH_BYTES = 255;
 
+function isInvalidRefComponent(component: string): boolean {
+  return component.length === 0
+    || component === "."
+    || component === ".."
+    || component.startsWith(".")
+    || component.endsWith(".")
+    || component.endsWith(".lock")
+    || component.includes("@{")
+    || /[\u0000-\u0020\u007f~^:?*\[\\]/.test(component);
+}
+
 function invalidUrl(message = "Invalid GitHub repository URL."): Result<RepositoryReference, AppError> {
   return err(new AppError({ code: "INVALID_URL", message }));
 }
@@ -42,13 +53,13 @@ export function validateGitHubBranch(branch: string): Result<string, AppError> {
     return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot be empty." }));
   }
 
-  if (Buffer.byteLength(branch, "utf8") > MAX_BRANCH_BYTES) {
+  if (new TextEncoder().encode(branch).byteLength > MAX_BRANCH_BYTES) {
     return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot exceed 255 bytes." }));
   }
 
   const segments = branch.split("/");
-  if (branch.includes("\\") || /[\u0000-\u001f\u007f?#]/.test(branch) || branch.includes("..") || segments.some((segment) => segment.length === 0 || hasTraversalSegment(segment))) {
-    return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names cannot contain empty or traversal segments." }));
+  if (branch === "@" || branch.includes("..") || segments.some((segment) => isInvalidRefComponent(segment) || hasTraversalSegment(segment))) {
+    return err(new AppError({ code: "INVALID_BRANCH", message: "GitHub branch names contain characters or segments that Git cannot use." }));
   }
   return ok(branch);
 }
@@ -75,7 +86,7 @@ export function parseGitHubUrl(input: string): Result<RepositoryReference, AppEr
     const parts = decodedPath.split("/");
     if (parts[0] === "") parts.shift();
     if (parts.length === 3 && parts[2] === "") parts.pop();
-    if (parts.length < 2 || parts.some((part) => part.length === 0 || hasTraversalSegment(part))) return invalidUrl(INVALID_REPOSITORY_URL);
+    if (parts.length < 2 || parts.some((part) => part.length === 0 || /[\u0000-\u0020\u007f\\]/.test(part) || hasTraversalSegment(part))) return invalidUrl(INVALID_REPOSITORY_URL);
 
     const [owner, rawName, kind] = parts;
     const name = rawName?.replace(/\.git$/, "");

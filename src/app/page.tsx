@@ -3,79 +3,17 @@
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { parseGitHubUrl } from "@/infrastructure/providers/github-url";
 
 const exampleRepository = "https://github.com/facebook/react";
 
-function hasTraversalSegment(segment: string): boolean {
-  if (segment === "." || segment === "..") return true;
-
-  let candidate = segment;
-  for (let attempt = 0; attempt < 2 && candidate.includes("%"); attempt += 1) {
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(candidate);
-    } catch {
-      return false;
-    }
-    if (decoded === candidate) return false;
-    candidate = decoded;
-    if (candidate === "." || candidate === "..") return true;
-  }
-  return false;
-}
-
-function extractRawPath(input: string): string {
-  const schemeEnd = input.indexOf("://");
-  const authorityStart = schemeEnd + 3;
-  const pathStart = input.indexOf("/", authorityStart);
-  if (pathStart === -1) return "/";
-  return input.slice(pathStart);
-}
-
 function validateRepositoryUrl(value: string): string {
-  const rawValue = value.trim();
-  try {
-    const parsed = new URL(rawValue);
-    if (
-      parsed.protocol !== "https:" ||
-      parsed.hostname.toLowerCase() !== "github.com" ||
-      parsed.port ||
-      parsed.username ||
-      parsed.password ||
-      parsed.search ||
-      parsed.hash ||
-      rawValue.includes("?") ||
-      rawValue.includes("#")
-    ) {
-      return "Paste a public github.com repository URL.";
-    }
-
-    let decodedPath: string;
-    try {
-      decodedPath = decodeURIComponent(extractRawPath(rawValue));
-    } catch {
-      return "The repository URL contains invalid URL encoding.";
-    }
-
-    if (!decodedPath.startsWith("/") || decodedPath.includes("\\")) {
-      return "Enter a valid GitHub repository URL.";
-    }
-
-    const parts = decodedPath.split("/");
-    if (parts[0] === "") parts.shift();
-    if (parts.length === 3 && parts[2] === "") parts.pop();
-    if (parts.length < 2 || parts.some((part) => part.length === 0 || hasTraversalSegment(part))) {
-      return "Include both the repository owner and name.";
-    }
-
-    const [, , kind] = parts;
-    if (parts.length > 2 && (kind !== "tree" || parts.length < 4)) {
-      return "Use a repository URL or an optional /tree/{branch} URL.";
-    }
-    return "";
-  } catch {
-    return "Enter a valid GitHub URL, such as https://github.com/owner/repo.";
-  }
+  const parsed = parseGitHubUrl(value);
+  if (parsed.ok) return "";
+  if (parsed.error.code === "UNSUPPORTED_HOST") return "Paste a public github.com repository URL.";
+  if (parsed.error.message.includes("invalid URL encoding")) return "The repository URL contains invalid URL encoding.";
+  if (parsed.error.message === "Invalid URL.") return "Enter a valid GitHub URL, such as https://github.com/owner/repo.";
+  return "Use a repository URL or an optional /tree/{branch} URL.";
 }
 
 export default function Home(): React.JSX.Element {

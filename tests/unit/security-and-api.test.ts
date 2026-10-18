@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { POST as analyzePost } from "@/app/api/analyze/route";
 import { POST as exportPost } from "@/app/api/exports/route";
+import { GET as healthGet } from "@/app/api/health/route";
 import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
 import { evidenceFor } from "@/analysis/evidence";
 import { filterFiles } from "@/analysis/filter-files";
@@ -8,6 +9,12 @@ import { toMermaid } from "@/analysis/exports";
 import type { Diagram } from "@/domain/diagram";
 
 describe("security and API boundaries", () => {
+  it("keeps liveness responses out of shared caches", async () => {
+    const response = healthGet();
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    await expect(response.json()).resolves.toEqual({ status: "ok", service: "repo-story" });
+  });
+
   it("redacts token, password, connection string, and private key values", () => {
     const secretText = [
       "token=ghp_1234567890abcdef",

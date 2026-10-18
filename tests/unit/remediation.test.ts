@@ -332,6 +332,10 @@ describe("Phase 3 remediation reproductions", () => {
     expect(parseGitHubUrl("https://github.com/acme/widget/tree/feature/../secret")).toMatchObject({ ok: false, error: { code: "INVALID_URL" } });
   });
 
+  it.each(["feature:bad", "feature~bad", "feature/.hidden", "feature/release.lock", "feature/@{bad}"])("rejects invalid Git ref branch component %s", (branch) => {
+    expect(parseGitHubUrl(`https://github.com/acme/widget/tree/${encodeURIComponent(branch)}`)).toMatchObject({ ok: false, error: { code: "INVALID_URL" } });
+  });
+
   it("keeps untrusted Markdown text from changing document structure", () => {
     const markdown = toMarkdown(diagramWithUntrustedText());
     expect(markdown).not.toContain("<script>");
