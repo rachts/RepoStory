@@ -149,6 +149,26 @@ describe("RepoAnalysis diagram navigation", () => {
     expect(await screen.findByText("README Markdown copied")).toBeInTheDocument();
   });
 
+  it("does not copy an export when the draft changes during saving", async () => {
+    const initial = diagram("repository-structure", "Repository structure");
+    let resolvePatch: ((response: unknown) => void) | undefined;
+    const patchResponse = new Promise((resolve) => { resolvePatch = resolve; });
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => analysis([initial]) })
+      .mockReturnValueOnce(patchResponse);
+
+    render(<RepoAnalysis analysisId="analysis-ui" />);
+
+    await screen.findByRole("heading", { level: 2, name: "Repository structure" });
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "First draft" } });
+    fireEvent.click(screen.getByRole("button", { name: "Copy README Markdown" }));
+    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Newer draft" } });
+    resolvePatch?.({ ok: true, json: async () => ({ diagram: { ...initial, title: "First draft" } }) });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("changed while saving");
+    expect(fetchMock.mock.calls.some(([url]) => url === "/api/exports")).toBe(false);
+  });
+
   it("shows the save error and does not request a stale export", async () => {
     const initial = diagram("repository-structure", "Repository structure");
     fetchMock

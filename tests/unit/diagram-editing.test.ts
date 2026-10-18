@@ -21,6 +21,19 @@ describe("diagram editing", () => {
     expect(toMermaid(updated)).not.toContain("repo");
   });
 
+  it("redacts token-like paths in edited diagram labels", () => {
+    const updated = applyDiagramPatch(diagram, { nodeUpdates: [{ nodeId: "repo", technicalLabel: "src/xoxb-example-secret/config.ts" }] });
+    expect(updated.nodes[0]?.technicalLabel).toBe("src/[REDACTED_SLACK_TOKEN]/config.ts");
+    expect(JSON.stringify(updated)).not.toContain("xoxb-example-secret");
+  });
+
+  it("redacts the exact secret-looking path while preserving an ordinary route path", () => {
+    const updated = applyDiagramPatch(diagram, { nodeUpdates: [{ nodeId: "repo", technicalLabel: "sk-proj-example-secret/src/index.ts", explanation: "src/app/api/projects/route.ts" }] });
+    expect(updated.nodes[0]?.technicalLabel).toBe("[REDACTED_OPENAI_KEY]/src/index.ts");
+    expect(updated.nodes[0]?.explanation).toBe("src/app/api/projects/route.ts");
+    expect(JSON.stringify(updated)).not.toContain("sk-proj-example-secret");
+  });
+
   it("keeps hidden edges out of Mermaid and includes edited Markdown content", () => {
     const withEdge: Diagram = { ...diagram, title: "Edited title", description: "Edited description", edges: [{ id: "edge-1", source: "repo", target: "repo", label: "hidden edge", visible: false, confidence: "medium", evidence: [] }] };
     const markdown = toMarkdown(withEdge, { includeEvidence: true });

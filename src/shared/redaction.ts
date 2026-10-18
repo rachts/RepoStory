@@ -1,5 +1,7 @@
+import type { AnalysisBudget } from "@/shared/limits";
+
 const PRIVATE_KEY_PATTERN = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----/g;
-const CONNECTION_STRING_PATTERN = /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqps?|mssql|sqlserver):\/\/|jdbc(?::[a-z][a-z0-9+.-]*)?:\/\/)[^\s"'`]+/gi;
+const CONNECTION_STRING_PATTERN = /((?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|rediss|amqps?|mssql|sqlserver):\/\/|jdbc(?::[a-z][a-z0-9+.-]*)?:\/\/)([^\s"'`]+)/gi;
 const BEARER_PATTERN = /(\b(?:authorization\s*[:=]\s*)?bearer\s+)(["']?)([^\s,"';]+)\2/gi;
 
 const TOKEN_PATTERNS: Array<[RegExp, string]> = [
@@ -182,7 +184,10 @@ function redactAssignments(text: string): string {
 export function redactSecrets(text: string): string {
   let redacted = text
     .replace(PRIVATE_KEY_PATTERN, "[REDACTED_PRIVATE_KEY]")
-    .replace(CONNECTION_STRING_PATTERN, "$1[REDACTED_CONNECTION_STRING]")
+    .replace(CONNECTION_STRING_PATTERN, (_match, scheme: string, remainder: string) => {
+      const at = remainder.lastIndexOf("@");
+      return at >= 0 ? `${scheme}[REDACTED_CONNECTION_STRING]@${remainder.slice(at + 1)}` : `${scheme}[REDACTED_CONNECTION_STRING]`;
+    })
     .replace(BEARER_PATTERN, (_match, prefix: string, quote: string) => `${prefix}${quote}[REDACTED_TOKEN]${quote}`);
 
   for (const [pattern, replacement] of TOKEN_PATTERNS) redacted = redacted.replace(pattern, replacement);
@@ -190,6 +195,73 @@ export function redactSecrets(text: string): string {
   redacted = redactUnquotedKeys(redacted);
   redacted = redactAssignments(redacted);
   return redacted;
+}
+
+const PATH_SECRET_KEY_PATTERN = /(?:api[._-]?key|access[._-]?key|auth[._-]?token|client[._-]?secret|credential|password|passwd|passphrase|private[._-]?key|session[._-]?token|secret|signing[._-]?secret|webhook[._-]?secret)/i;
+const PATH_TOKEN_PATTERN = /^[A-Za-z0-9_-]{24,}$/;
+const PATH_SECRET_SUFFIX_PATTERN = /(?:api[._-]?key|access[._-]?key|auth[._-]?token|client[._-]?secret|credential|password|passwd|passphrase|private[._-]?key|session[._-]?token|secret|signing[._-]?secret|webhook[._-]?secret)[._-]+([A-Za-z0-9][A-Za-z0-9_-]{3,})$/i;
+const OPAQUE_ID_PATTERN = /^(?:analysis|diagram|export)-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function looksLikeCredentialPathSegment(segment: string): boolean {
+  const match = segment.match(PATH_SECRET_SUFFIX_PATTERN);
+  if (!match?.[1]) return false;
+  return !/^(?:config|example|form|login|reset|route|test|template|value)$/i.test(match[1]);
+}
+
+function looksLikeHighEntropyPathSegment(segment: string): boolean {
+  if (OPAQUE_ID_PATTERN.test(segment)) return false;
+  if (!PATH_TOKEN_PATTERN.test(segment)) return false;
+  const compact = segment.replace(/[-_]/g, "");
+  const uniqueCharacters = new Set(compact).size;
+  const digitCount = (compact.match(/\d/g) ?? []).length;
+  const hasMixedCase = /[a-z]/.test(compact) && /[A-Z]/.test(compact);
+  const separatorCount = (segment.match(/[-_]/g) ?? []).length;
+  return uniqueCharacters >= 12 && digitCount >= 2 && (hasMixedCase || separatorCount === 0 && uniqueCharacters >= 16);
+}
+
+function redactPathSegment(segment: string): string {
+  const redacted = redactSecrets(segment);
+  if (redacted !== segment) return redacted;
+  if (looksLikeHighEntropyPathSegment(segment) || (PATH_SECRET_KEY_PATTERN.test(segment) && looksLikeCredentialPathSegment(segment))) return "[REDACTED_PATH_SEGMENT]";
+  return segment;
+}
+
+/** Redact token-like path segments without changing path separators or ordinary names. */
+export function redactPath(filePath: string): string {
+  const redacted = redactSecrets(filePath);
+  return redacted
+    .split(/([\\/]+)/)
+    .map((part) => /[\\/]+/.test(part) ? part : redactPathSegment(part))
+    .join("");
+}
+
+/** Sanitize nested API/domain payloads while preserving their original shape and types. */
+export function redactPathValues<T>(value: T, budget?: AnalysisBudget): T {
+  const visit = (current: unknown): unknown => {
+    budget?.check();
+    if (typeof current === "string") return redactPath(current);
+    if (Array.isArray(current)) {
+      const result: unknown[] = [];
+      for (const item of current) {
+        budget?.check();
+        result.push(visit(item));
+      }
+      budget?.check();
+      return result;
+    }
+    if (!current || typeof current !== "object") return current;
+    if (current instanceof Date) return current;
+
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of Object.entries(current)) {
+      budget?.check();
+      result[key] = visit(item);
+    }
+    budget?.check();
+    return result;
+  };
+
+  return visit(value) as T;
 }
 
 const SAFE_ENV_BASENAME = /^\.env\.(?:example|sample|template)$/i;

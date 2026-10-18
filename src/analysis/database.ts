@@ -4,6 +4,7 @@ import type { RepositoryFile } from "@/domain/repository";
 import type { AnalysisBudget } from "@/shared/limits";
 import { evidenceForPattern, fileContent, packageDependencyEvidence, packageNames, safePath, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
 import { stableId } from "@/shared/ids";
+import { redactPath, redactSecrets } from "@/shared/redaction";
 
 interface DatabaseRule {
   key: string;
@@ -30,42 +31,63 @@ const databaseRules: DatabaseRule[] = [
 
 const contextRequiredInitialization = new Set(["drizzle", "postgres", "mysql", "redis", "sqlite", "typeorm", "knex", "supabase-database"]);
 
-function migrationFiles(files: RepositoryFile[]): RepositoryFile[] {
-  return sourceFiles(files).filter((file) => {
-    if (!/\.sql$/i.test(file.path)) return false;
+function migrationFiles(files: RepositoryFile[], budget?: AnalysisBudget): RepositoryFile[] {
+  const migrations: RepositoryFile[] = [];
+  for (const file of sourceFiles(files, budget)) {
+    budget?.check();
+    if (!/\.sql$/i.test(file.path)) continue;
     const pathLooksLikeMigration = /(^|\/)(?:migrations?|db|database|schema)(?:\/|[-_])/i.test(file.path);
-    return pathLooksLikeMigration || /\b(?:create|alter|drop)\s+(?:table|index|schema)|\binsert\s+into\b/i.test(fileContent(file));
-  });
+    if (pathLooksLikeMigration || /\b(?:create|alter|drop)\s+(?:table|index|schema)|\binsert\s+into\b/i.test(fileContent(file))) migrations.push(file);
+  }
+  return migrations;
 }
 
-function schemaFiles(files: RepositoryFile[]): RepositoryFile[] {
-  return sourceFiles(files).filter((file) => /\.prisma$/i.test(file.path));
+function schemaFiles(files: RepositoryFile[], budget?: AnalysisBudget): RepositoryFile[] {
+  const schemas: RepositoryFile[] = [];
+  for (const file of sourceFiles(files, budget)) {
+    budget?.check();
+    if (/\.prisma$/i.test(file.path)) schemas.push(file);
+  }
+  return schemas;
 }
 
-function findingFor(rule: DatabaseRule, evidence: EvidenceReference[], evidenceType: DatabaseFinding["evidenceType"], confidence: DatabaseFinding["confidence"], detail: string): DatabaseFinding {
+function findingFor(rule: DatabaseRule, evidence: EvidenceReference[], evidenceType: DatabaseFinding["evidenceType"], confidence: DatabaseFinding["confidence"], detail: string, budget?: AnalysisBudget): DatabaseFinding {
   return {
     id: stableId("database", rule.key),
     kind: "database",
     technicalLabel: rule.label,
     plainEnglishLabel: rule.plain,
-    explanation: `${rule.label} evidence was found ${detail}. This conclusion is based on static file and dependency evidence only.`,
-    technicalDetail: `database=${rule.key}`,
+    explanation: redactSecrets(`${rule.label} evidence was found ${detail}. This conclusion is based on static file and dependency evidence only.`),
+    technicalDetail: redactSecrets(`database=${rule.key}`),
     confidence,
-    evidence: uniqueEvidence(evidence),
+    evidence: uniqueEvidence(evidence, budget),
     technology: rule.label,
     evidenceType,
   };
 }
 
 export function analyzeDatabaseEvidence(files: RepositoryFile[], budget?: AnalysisBudget): DatabaseFinding[] {
-  const analyzable = sourceFiles(files);
-  const packageFile = analyzable.find((file) => file.path.toLowerCase() === "package.json");
-  const dependencies = new Set(packageNames(packageFile));
+  const analyzable = sourceFiles(files, budget);
+  let packageFile: RepositoryFile | undefined;
+  for (const file of analyzable) {
+    budget?.check();
+    if (file.path.toLowerCase() === "package.json") {
+      packageFile = file;
+      break;
+    }
+  }
+  const dependencies = new Set(packageNames(packageFile, budget));
   const findings: DatabaseFinding[] = [];
   for (const rule of databaseRules) {
     budget?.check();
-    const packageMatches = rule.packages.filter((name) => dependencies.has(name));
-    const evidence: EvidenceReference[] = packageMatches.flatMap((name) => packageDependencyEvidence(packageFile, name, `${rule.label} dependency ${name} is declared`));
+    const packageMatches: string[] = [];
+    const evidence: EvidenceReference[] = [];
+    for (const name of rule.packages) {
+      budget?.check();
+      if (!dependencies.has(name)) continue;
+      packageMatches.push(name);
+      evidence.push(...packageDependencyEvidence(packageFile, name, `${rule.label} dependency ${name} is declared`));
+    }
     const sourceMatches: RepositoryFile[] = [];
     for (const file of analyzable) {
       budget?.check();
@@ -81,43 +103,53 @@ export function analyzeDatabaseEvidence(files: RepositoryFile[], budget?: Analys
     if (!sourceMatches.length) continue;
     const evidenceType: DatabaseFinding["evidenceType"] = packageMatches.length ? "dependency" : "client-initialization";
     const confidence: DatabaseFinding["confidence"] = packageMatches.length ? "high" : "medium";
-    const detail = packageMatches.length ? `through declared package${packageMatches.length > 1 ? "s" : ""} ${packageMatches.join(", ")} and usage in ${sourceMatches.map((file) => safePath(file.path)).join(", ")}` : `in ${sourceMatches.map((file) => safePath(file.path)).join(", ")}`;
-    findings.push(findingFor(rule, evidence, evidenceType, confidence, detail));
+    const detail = packageMatches.length ? `through declared package${packageMatches.length > 1 ? "s" : ""} ${packageMatches.join(", ")} and usage in ${sourceMatches.map((file) => redactPath(safePath(file.path))).join(", ")}` : `in ${sourceMatches.map((file) => redactPath(safePath(file.path))).join(", ")}`;
+    findings.push(findingFor(rule, evidence, evidenceType, confidence, detail, budget));
   }
 
   budget?.check();
-  const prismaSchemas = schemaFiles(files);
+  const prismaSchemas = schemaFiles(files, budget);
   if (prismaSchemas.length) {
-    const evidence = prismaSchemas.map((file) => evidenceForPattern(file, `Prisma schema file ${safePath(file.path)}`));
+    const evidence: EvidenceReference[] = [];
+    for (const file of prismaSchemas) {
+      budget?.check();
+      evidence.push(evidenceForPattern(file, `Prisma schema file ${redactPath(safePath(file.path))}`));
+    }
     const existing = findings.find((finding) => finding.technology === "Prisma");
     if (existing) {
-      existing.evidence = uniqueEvidence([...existing.evidence, ...evidence]);
+      existing.evidence = uniqueEvidence([...existing.evidence, ...evidence], budget);
       existing.evidenceType = "schema";
       existing.explanation = `${existing.explanation} A Prisma schema file also confirms the database model.`;
     } else {
-      findings.push(findingFor(databaseRules[0]!, evidence, "schema", "high", `through schema file${prismaSchemas.length > 1 ? "s" : ""} ${prismaSchemas.map((file) => safePath(file.path)).join(", ")}`));
+      findings.push(findingFor(databaseRules[0]!, evidence, "schema", "high", `through schema file${prismaSchemas.length > 1 ? "s" : ""} ${prismaSchemas.map((file) => redactPath(safePath(file.path))).join(", ")}`, budget));
     }
   }
 
   budget?.check();
-  const migrations = migrationFiles(files);
+  const migrations = migrationFiles(files, budget);
   if (migrations.length) {
-    const evidence = migrations.map((file) => evidenceForPattern(file, `SQL migration evidence in ${safePath(file.path)}`, /\b(?:create|alter|drop)\s+(?:table|index|schema)|\binsert\s+into\b/i));
+    const evidence: EvidenceReference[] = [];
+    for (const file of migrations) {
+      budget?.check();
+      evidence.push(evidenceForPattern(file, `SQL migration evidence in ${redactPath(safePath(file.path))}`, /\b(?:create|alter|drop)\s+(?:table|index|schema)|\binsert\s+into\b/i));
+    }
     findings.push({
       id: stableId("database", "sql-migrations"),
       kind: "database",
       technicalLabel: "SQL migrations",
       plainEnglishLabel: "Versioned database changes",
       explanation: `SQL migration files describe database schema changes without requiring the application to run.`,
-      technicalDetail: `migrationFiles=${migrations.map((file) => safePath(file.path)).join(", ")}`,
+      technicalDetail: redactSecrets(`migrationFiles=${migrations.map((file) => redactPath(safePath(file.path))).join(", ")}`),
       confidence: "high",
-      evidence: uniqueEvidence(evidence),
+      evidence: uniqueEvidence(evidence, budget),
       technology: "SQL migrations",
       evidenceType: "migration",
     });
   }
 
-  return findings.sort((left, right) => left.id.localeCompare(right.id));
+  findings.sort((left, right) => { budget?.check(); return left.id.localeCompare(right.id); });
+  budget?.check();
+  return findings;
 }
 
 export const analyzeDatabases = analyzeDatabaseEvidence;

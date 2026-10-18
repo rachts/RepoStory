@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { analysisStore } from "@/composition/container";
+import { redactPathValues } from "@/shared/redaction";
 
 interface RouteContext {
   params: Promise<{ analysisId: string }>;
@@ -9,5 +10,5 @@ export async function GET(_request: Request, context: RouteContext): Promise<Nex
   const { analysisId } = await context.params;
   const analysis = analysisStore.get(analysisId);
   if (!analysis) return NextResponse.json({ error: { code: "ANALYSIS_NOT_FOUND", message: "Analysis not found.", retryable: false } }, { status: 404 });
-  return NextResponse.json({ ...analysis, diagrams: analysisStore.listDiagrams(analysisId) });
+  return NextResponse.json(redactPathValues({ ...analysis, diagrams: analysisStore.listDiagrams(analysisId) }));
 }

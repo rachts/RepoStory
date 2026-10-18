@@ -1,6 +1,7 @@
 import type { ModuleRelationship } from "@/domain/finding";
 import type { RepositoryFile } from "@/domain/repository";
 import type { AnalysisBudget } from "@/shared/limits";
+import { DEFAULT_LIMITS } from "@/shared/limits";
 import { evidenceForPattern, fileContent, linePattern, moduleAliases, resolveLocalModule, safePath, safeText, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
 import { normalizePath } from "@/shared/text";
 import { stableId } from "@/shared/ids";
@@ -11,40 +12,59 @@ interface ImportCandidate {
   pattern: RegExp;
 }
 
-function importCandidates(content: string): ImportCandidate[] {
-  const clean = withoutStandaloneComments(content);
+export function importCandidates(content: string, budget?: AnalysisBudget, maxCandidates: number = DEFAULT_LIMITS.maxImportCandidates): ImportCandidate[] {
+  const candidateLimit = Number.isSafeInteger(maxCandidates) && maxCandidates >= 0 ? maxCandidates : DEFAULT_LIMITS.maxImportCandidates;
+  budget?.check();
+  if (candidateLimit === 0) return [];
+  const boundedContent = content.length > DEFAULT_LIMITS.maxContentBytes ? content.slice(0, DEFAULT_LIMITS.maxContentBytes) : content;
+  const clean = withoutStandaloneComments(boundedContent);
+  budget?.check();
   const candidates: ImportCandidate[] = [];
+  const seen = new Set<string>();
   const addMatches = (pattern: RegExp, importType: ImportCandidate["importType"]) => {
-    for (const match of clean.matchAll(pattern)) {
+    budget?.check();
+    const matches = clean.matchAll(pattern);
+    for (const match of matches) {
+      budget?.check();
+      if (candidates.length >= candidateLimit) return;
       const specifier = match[1];
       if (!specifier) continue;
+      const key = `${importType}:${specifier}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
       candidates.push({ specifier, importType, pattern: linePattern(specifier) });
+      budget?.check();
     }
+    budget?.check();
   };
   addMatches(/\bimport\s+(?:type\s+)?(?:[^"'`\n;]+?\s+from\s+)?["'`]([^"'`]+)["'`]/g, "static");
-  addMatches(/\bexport\s+(?:type\s+)?[^"'`\n;]+?\s+from\s+["'`]([^"'`]+)["'`]/g, "static");
-  addMatches(/\bimport\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g, "dynamic");
-  addMatches(/\brequire\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g, "require");
-  const seen = new Set<string>();
-  return candidates.filter((candidate) => {
-    const key = `${candidate.importType}:${candidate.specifier}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  if (candidates.length < candidateLimit) addMatches(/\bexport\s+(?:type\s+)?[^"'`\n;]+?\s+from\s+["'`]([^"'`]+)["'`]/g, "static");
+  if (candidates.length < candidateLimit) addMatches(/\bimport\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g, "dynamic");
+  if (candidates.length < candidateLimit) addMatches(/\brequire\s*\(\s*["'`]([^"'`]+)["'`]\s*\)/g, "require");
+  budget?.check();
+  return candidates;
 }
 
-export function analyzeModuleRelationships(files: RepositoryFile[], budget?: AnalysisBudget): ModuleRelationship[] {
-  const analyzable = sourceFiles(files);
-  const knownPaths = new Set(analyzable.map((file) => normalizePath(file.path)));
-  const fileByPath = new Map(analyzable.map((file) => [normalizePath(file.path), file]));
-  const aliases = moduleAliases(analyzable);
+export function analyzeModuleRelationships(files: RepositoryFile[], budget?: AnalysisBudget, maxImportCandidates: number = DEFAULT_LIMITS.maxImportCandidates): ModuleRelationship[] {
+  const analyzable = sourceFiles(files, budget);
+  const knownPaths = new Set<string>();
+  const fileByPath = new Map<string, RepositoryFile>();
+  for (const file of analyzable) {
+    budget?.check();
+    const normalizedPath = normalizePath(file.path);
+    knownPaths.add(normalizedPath);
+    fileByPath.set(normalizedPath, file);
+  }
+  const aliases = moduleAliases(analyzable, budget);
   const relationships: ModuleRelationship[] = [];
   for (const source of analyzable) {
     budget?.check();
-    for (const candidate of importCandidates(fileContent(source))) {
+    const candidates = importCandidates(fileContent(source), budget, maxImportCandidates);
+    budget?.check();
+    for (const candidate of candidates) {
       budget?.check();
-      const resolved = resolveLocalModule(source.path, candidate.specifier, knownPaths, aliases);
+      const resolved = resolveLocalModule(source.path, candidate.specifier, knownPaths, aliases, budget);
+      budget?.check();
       if (!resolved) continue;
       const target = fileByPath.get(resolved.targetPath);
       if (!target) continue;
@@ -53,7 +73,7 @@ export function analyzeModuleRelationships(files: RepositoryFile[], budget?: Ana
       const evidence = uniqueEvidence([
         evidenceForPattern(source, `imports local module ${targetPath} via ${candidate.importType}`, candidate.pattern),
         evidenceForPattern(target, `is the resolved local module imported by ${sourcePath}`),
-      ]);
+      ], budget);
       relationships.push({
         id: stableId("module-relationship", sourcePath, targetPath, candidate.importType),
         kind: "module-relationship",
@@ -77,8 +97,18 @@ export function analyzeModuleRelationships(files: RepositoryFile[], budget?: Ana
     }
   }
   const byId = new Map<string, ModuleRelationship>();
-  for (const relationship of relationships) byId.set(relationship.id, relationship);
-  return [...byId.values()].sort((left, right) => left.id.localeCompare(right.id));
+  for (const relationship of relationships) {
+    budget?.check();
+    byId.set(relationship.id, relationship);
+  }
+  budget?.check();
+  const sortedRelationships = [...byId.values()];
+  sortedRelationships.sort((left, right) => {
+    budget?.check();
+    return left.id.localeCompare(right.id);
+  });
+  budget?.check();
+  return sortedRelationships;
 }
 
 export const analyzeModules = analyzeModuleRelationships;
