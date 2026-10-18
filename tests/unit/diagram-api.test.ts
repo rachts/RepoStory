@@ -29,4 +29,16 @@ describe("diagram editing API", () => {
     const missing = await GET(new Request("http://localhost/api/diagrams/missing"), { params: Promise.resolve({ diagramId: "missing" }) });
     expect(missing.status).toBe(404);
   });
+
+  it("rejects an empty patch instead of mutating the diagram timestamp", async () => {
+    const response = await PATCH(new Request("http://localhost/api/diagrams/api-diagram", { method: "PATCH", body: JSON.stringify({}), headers: { "content-type": "application/json" } }), context);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_PATCH", retryable: false } });
+  });
+
+  it("maps malformed JSON to the diagram patch contract", async () => {
+    const response = await PATCH(new Request("http://localhost/api/diagrams/api-diagram", { method: "PATCH", body: "{", headers: { "content-type": "application/json" } }), context);
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_PATCH", retryable: false } });
+  });
 });

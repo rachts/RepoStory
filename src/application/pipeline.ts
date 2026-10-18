@@ -1,7 +1,7 @@
 import type { AnalysisError, AnalysisJob, DiagramAvailability } from "@/domain/analysis";
-import type { RepositoryProvider, RepositoryReference } from "@/domain/repository";
+import type { RepositoryFile, RepositoryProvider, RepositoryReference } from "@/domain/repository";
 import { repositoryStructureDiagram, systemOverviewDiagram } from "@/analysis/diagrams";
-import { analyzeDirectories, analyzeEntryPoints, analyzePhase3, analyzeTechnologies, apiRequestFlowDiagram, authenticationFlowDiagram } from "@/analysis";
+import { analyzeDirectories, analyzeEntryPoints, analyzePhase3, analyzeTechnologies, apiRequestFlowDiagram, authenticationFlowDiagram, generateArchitectureStory } from "@/analysis";
 import { filterFiles } from "@/analysis/filter-files";
 import { AppError } from "@/domain/errors";
 import type { AnalysisStore } from "@/application/store";
@@ -16,6 +16,20 @@ export interface AnalysisRunOptions {
   budget?: AnalysisBudget;
 }
 
+function fileBytes(file: RepositoryFile): number {
+  if (Number.isSafeInteger(file.sizeBytes) && (file.sizeBytes ?? 0) >= 0) return file.sizeBytes ?? 0;
+  return file.content === undefined ? 0 : new TextEncoder().encode(file.content).byteLength;
+}
+
+function totalFileBytes(files: readonly RepositoryFile[]): number {
+  let total = 0;
+  for (const file of files) {
+    const bytes = fileBytes(file);
+    total = Math.min(Number.MAX_SAFE_INTEGER, total + bytes);
+  }
+  return total;
+}
+
 export async function runAnalysis(
   reference: RepositoryReference,
   provider: RepositoryProvider,
@@ -24,6 +38,7 @@ export async function runAnalysis(
 ): Promise<Result<AnalysisJob, AppError>> {
   const limits = options.limits ?? DEFAULT_LIMITS;
   const id = opaqueId("analysis");
+  store.startAnalysis?.(id);
   const started = nowIso();
   let job: AnalysisJob = {
     id,
@@ -55,6 +70,10 @@ export async function runAnalysis(
 
     const files = filterFiles(snapshot.value.files, limits, budget);
     budget.check();
+    const filesDiscovered = snapshot.value.files.length;
+    const filesAnalyzed = files.length;
+    const bytesDiscovered = totalFileBytes(snapshot.value.files);
+    const bytesAnalyzed = totalFileBytes(files);
     const technologies = redactPathValues(analyzeTechnologies(files, budget), budget);
     budget.check();
     const phase3 = redactPathValues(analyzePhase3(files, budget, limits), budget);
@@ -88,13 +107,17 @@ export async function runAnalysis(
       { type: "api-request-flow", available: diagramTypes.has("api-request-flow"), confidence: phase3.apiRoutes.some((route) => route.confidence === "needs-verification") ? "needs-verification" : phase3.apiRoutes.length ? "medium" : undefined, reason: diagramTypes.has("api-request-flow") ? undefined : "No evidence-backed API routes were detected." },
       { type: "authentication-flow", available: diagramTypes.has("authentication-flow"), confidence: phase3.authentication.some((finding) => finding.confidence === "needs-verification") ? "needs-verification" : phase3.authentication.length ? "medium" : undefined, reason: diagramTypes.has("authentication-flow") ? undefined : "No meaningful authentication evidence was detected." },
     ];
+    budget.check();
+    const architectureStory = redactPathValues(generateArchitectureStory({ repository, findings: safeFindings, diagrams, diagramAvailability, filesAnalyzed, filesDiscovered, filesSkipped: Math.max(0, filesDiscovered - filesAnalyzed), bytesAnalyzed, bytesDiscovered }, budget), budget);
     for (const diagram of diagrams) { budget.check(); store.saveDiagram(redactPathValues(diagram, budget)); }
 
     budget.check();
-    job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered: snapshot.value.files.length, filesAnalyzed: files.length, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), completedAt: nowIso() }, budget);
+    job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered, filesAnalyzed, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), architectureStory, completedAt: nowIso() }, budget);
     store.save(job);
     return ok(job);
   } catch (error) {
     return fail(error instanceof AppError ? error : new AppError({ code: "ANALYSIS_FAILED", message: "The analysis could not be completed.", retryable: true }));
+  } finally {
+    store.finishAnalysis?.(id);
   }
 }

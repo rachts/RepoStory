@@ -75,6 +75,7 @@ function edge(idParts: string[], source: string, target: string, label: string, 
     label: safeText(label),
     explanation: safeText(explanation),
     visible: true,
+    inferred: confidence !== "high",
     confidence,
     evidence: safeEvidence(evidence, budget),
   };

@@ -5,6 +5,7 @@ import type { AnalysisBudget } from "@/shared/limits";
 import { evidenceForPattern, fileContent, packageDependencyEvidence, packageNames, safePath, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
 import { stableId } from "@/shared/ids";
 import { redactPath, redactSecrets } from "@/shared/redaction";
+import { normalizePath } from "@/shared/text";
 
 interface AuthenticationRule {
   key: string;
@@ -68,7 +69,7 @@ export function analyzeAuthentication(files: RepositoryFile[], budget?: Analysis
   let packageFile: RepositoryFile | undefined;
   for (const file of analyzable) {
     budget?.check();
-    if (file.path.toLowerCase() === "package.json") {
+    if (normalizePath(file.path).toLowerCase() === "package.json") {
       packageFile = file;
       break;
     }
