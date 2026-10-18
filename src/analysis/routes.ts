@@ -30,6 +30,7 @@ function asHttpMethods(methods: string[]): HttpMethod[] {
 function nextMethods(content: string, budget?: AnalysisBudget): { methods: HttpMethod[]; pattern?: RegExp; reason: string } {
   const clean = withoutStandaloneComments(content);
   const methods: string[] = [];
+  let matchedPattern: RegExp | undefined;
   const patterns: RegExp[] = [
     new RegExp(`export\\s+(?:async\\s+)?function\\s+(${HTTP_METHOD_PATTERN})\\b`, "gi"),
     new RegExp(`export\\s+(?:const|let|var)\\s+(${HTTP_METHOD_PATTERN})\\s*=`, "gi"),
@@ -37,7 +38,10 @@ function nextMethods(content: string, budget?: AnalysisBudget): { methods: HttpM
   for (const pattern of patterns) {
     for (const match of clean.matchAll(pattern)) {
       budget?.check();
-      if (match[1]) methods.push(match[1]);
+      if (match[1]) {
+        methods.push(match[1]);
+        matchedPattern ??= pattern;
+      }
     }
   }
   const exportList = /export\s*\{([^}]+)\}/gi;
@@ -46,11 +50,14 @@ function nextMethods(content: string, budget?: AnalysisBudget): { methods: HttpM
     for (const name of match[1]?.split(",") ?? []) {
       budget?.check();
       const method = name.trim().split(/\s+as\s+/i)[0]?.toUpperCase();
-      if (method && HTTP_METHODS.includes(method as (typeof HTTP_METHODS)[number])) methods.push(method);
+      if (method && HTTP_METHODS.includes(method as (typeof HTTP_METHODS)[number])) {
+        methods.push(method);
+        matchedPattern ??= exportList;
+      }
     }
   }
   const normalized = asHttpMethods(methods);
-  if (normalized[0] !== "UNKNOWN") return { methods: normalized, pattern: patterns[0], reason: "exports named HTTP method handlers" };
+  if (normalized[0] !== "UNKNOWN") return { methods: normalized, pattern: matchedPattern, reason: "exports named HTTP method handlers" };
   const defaultPattern = /export\s+default\b/i;
   if (defaultPattern.test(clean)) return { methods: ["UNKNOWN"], pattern: defaultPattern, reason: "has a default API handler without explicit method branching" };
   return { methods: ["UNKNOWN"], reason: "matches an API route filename but does not expose a named method" };
@@ -154,12 +161,13 @@ interface MountEntry {
 
 const EXPRESS_MODULES = new Set(["express"]);
 
-function expressCandidates(file: RepositoryFile, budget?: AnalysisBudget): { routes: ExpressRouteCandidate[]; mounts: MountCandidate[]; receivers: Set<string>; routers: Set<string> } {
+function expressCandidates(file: RepositoryFile, budget?: AnalysisBudget): { routes: ExpressRouteCandidate[]; mounts: MountCandidate[]; receivers: Set<string>; routers: Set<string>; appReceivers: Set<string> } {
   const clean = withoutStandaloneComments(fileContent(file));
   const routers = new Set<string>();
   const receivers = new Set<string>();
   const expressBindings = new Set<string>();
   const routerFactories = new Set<string>();
+  const appReceivers = new Set<string>();
   const isExpressModule = (source: string): boolean => EXPRESS_MODULES.has(source);
 
   const defaultImports = /\bimport\s+([A-Za-z_$][\w$]*)\s*(?:,\s*\{([^}]+)\})?\s+from\s*["']([^"']+)["']/g;
@@ -224,13 +232,19 @@ function expressCandidates(file: RepositoryFile, budget?: AnalysisBudget): { rou
   const appDeclaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([A-Za-z_$][\w$]*)\s*\(\s*\)/g;
   for (const match of clean.matchAll(appDeclaration)) {
     budget?.check();
-    if (match[1] && match[2] && expressBindings.has(match[2])) receivers.add(match[1]);
+    if (match[1] && match[2] && expressBindings.has(match[2])) {
+      receivers.add(match[1]);
+      appReceivers.add(match[1]);
+    }
   }
 
   const requiredAppDeclaration = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*["']([^"']+)["']\s*\)\s*\(\s*\)/g;
   for (const match of clean.matchAll(requiredAppDeclaration)) {
     budget?.check();
-    if (match[1] && match[2] && isExpressModule(match[2])) receivers.add(match[1]);
+    if (match[1] && match[2] && isExpressModule(match[2])) {
+      receivers.add(match[1]);
+      appReceivers.add(match[1]);
+    }
   }
 
   const routes: ExpressRouteCandidate[] = [];
@@ -274,14 +288,14 @@ function expressCandidates(file: RepositoryFile, budget?: AnalysisBudget): { rou
     receivers.add(receiver);
     mounts.push({ receiver, prefix, target, pattern: new RegExp(`${receiver}\\s*\\.\\s*use\\s*\\(`, "i") });
   }
-  return { routes, mounts, receivers, routers };
+  return { routes, mounts, receivers, routers, appReceivers };
 }
 
-function resolveMountPrefixes(mounts: MountCandidate[], receivers: Set<string>, budget?: AnalysisBudget): Map<string, MountEntry[]> {
+function resolveMountPrefixes(mounts: MountCandidate[], appReceivers: Set<string>, budget?: AnalysisBudget): Map<string, MountEntry[]> {
   const prefixes = new Map<string, MountEntry[]>();
-  for (const receiver of receivers) {
+  for (const receiver of appReceivers) {
     budget?.check();
-    if (receiver === "app" || receiver.toLowerCase().includes("app")) prefixes.set(receiver, [{ prefix: "" }]);
+    prefixes.set(receiver, [{ prefix: "" }]);
   }
   let changed = true;
   let rounds = 0;
@@ -352,7 +366,7 @@ function expressRoute(file: RepositoryFile, candidate: ExpressRouteCandidate, ro
 function expressRoutes(file: RepositoryFile, budget?: AnalysisBudget): ApiRouteFinding[] {
   const parsed = expressCandidates(file, budget);
   if (!parsed.routes.length) return [];
-  const prefixes = resolveMountPrefixes(parsed.mounts, parsed.receivers, budget);
+  const prefixes = resolveMountPrefixes(parsed.mounts, parsed.appReceivers, budget);
   const findings: ApiRouteFinding[] = [];
   for (const candidate of parsed.routes) {
     budget?.check();

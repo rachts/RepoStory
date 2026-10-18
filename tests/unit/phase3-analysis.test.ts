@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { RepositoryFile, Repository } from "@/domain/repository";
 import { analyzeApiRoutes } from "@/analysis/routes";
-import { analyzeModuleRelationships } from "@/analysis/module-relationships";
+import { analyzeModuleRelationships, importCandidates } from "@/analysis/module-relationships";
+import { moduleAliases, resolveLocalModule } from "@/analysis/static-utils";
 import { analyzeDatabaseEvidence } from "@/analysis/database";
 import { analyzeExternalIntegrations } from "@/analysis/integrations";
 import { analyzeAuthentication } from "@/analysis/authentication";
 import { analyzeDirectories } from "@/analysis/directory";
 import { analyzePhase3 } from "@/analysis/phase3";
 import { apiRequestFlowDiagram, authenticationFlowDiagram } from "@/analysis/flow-diagrams";
+import { systemOverviewDiagram } from "@/analysis/diagrams";
+import { analyzeTechnologies } from "@/analysis/technology";
 import nextApiFixture from "../../fixtures/repositories/next-api/repository.json";
 import expressFixture from "../../fixtures/repositories/express-api/repository.json";
 import authenticatedFixture from "../../fixtures/repositories/authenticated-app/repository.json";
@@ -35,6 +38,18 @@ describe("RepoStory Phase 3 deterministic analysis", () => {
     expect(findings.every((finding) => finding.evidence.length > 0 && finding.explanation.length > 0)).toBe(true);
   });
 
+  it("anchors evidence to the actual exported handler when the first method is declared later", () => {
+    const findings = analyzeApiRoutes([{
+      path: "src/app/api/later/route.ts",
+      type: "file",
+      content: "const note = true;\nexport const POST = async () => Response.json({ ok: true });\n",
+      isAnalyzable: true,
+    }]);
+
+    expect(findings[0]?.methods).toEqual(["POST"]);
+    expect(findings[0]?.evidence[0]?.lineStart).toBe(2);
+  });
+
   it("detects Express routes and mounted prefixes", () => {
     const findings = analyzeApiRoutes(files(expressFixture));
     expect(findings.map((finding) => `${finding.methods[0]} ${finding.routePath}`)).toEqual(expect.arrayContaining([
@@ -48,12 +63,52 @@ describe("RepoStory Phase 3 deterministic analysis", () => {
     expect(findings.every((finding) => finding.evidence.length > 0)).toBe(true);
   });
 
+  it("resolves mounted prefixes for Express app variables with nonstandard names", () => {
+    const findings = analyzeApiRoutes([{
+      path: "src/server.ts",
+      type: "file",
+      content: [
+        'import express from "express";',
+        'const server = express();',
+        'const api = express.Router();',
+        'server.use("/v1", api);',
+        'api.get("/health", handler);',
+      ].join("\n"),
+      isAnalyzable: true,
+    }]);
+
+    expect(findings).toEqual([expect.objectContaining({ routePath: "/v1/health", prefix: "/v1" })]);
+  });
+
   it("resolves local static imports without executing repository code", () => {
     const relationships = analyzeModuleRelationships(files(nextApiFixture));
     expect(relationships).toEqual(expect.arrayContaining([
       expect.objectContaining({ sourceFile: "src/app/api/users/service.ts", targetFile: "src/lib/users.ts", importType: "static", relationship: "imports" }),
     ]));
     expect(relationships.every((relationship) => relationship.evidence.length > 0 && relationship.plainEnglishLabel.length > 0)).toBe(true);
+  });
+
+  it("prefers specific path aliases and resolves published JavaScript specifiers to TypeScript sources", () => {
+    const aliasFiles: RepositoryFile[] = [
+      { path: "tsconfig.json", type: "file", content: JSON.stringify({ compilerOptions: { paths: { "@/*": ["src/*"], "@feature/*": ["packages/feature/*"] } } }), isAnalyzable: true },
+      { path: "src/index.ts", type: "file", content: 'import { feature } from "@feature/thing";\nimport { local } from "./local.js";', isAnalyzable: true },
+      { path: "src/local.ts", type: "file", content: "export const local = true;", isAnalyzable: true },
+      { path: "src/feature/thing.ts", type: "file", content: "export const feature = false;", isAnalyzable: true },
+      { path: "packages/feature/thing.ts", type: "file", content: "export const feature = true;", isAnalyzable: true },
+    ];
+
+    expect(importCandidates(aliasFiles[1]!.content!)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ specifier: "@feature/thing" }),
+      expect.objectContaining({ specifier: "./local.js" }),
+    ]));
+    const aliases = moduleAliases(aliasFiles);
+    expect(resolveLocalModule("src/index.ts", "./local.js", new Set(aliasFiles.map((file) => file.path)), aliases)).toMatchObject({ targetPath: "src/local.ts" });
+    const relationships = analyzeModuleRelationships(aliasFiles);
+    expect(relationships).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sourceFile: "src/index.ts", targetFile: "packages/feature/thing.ts", specifier: "@feature/thing" }),
+      expect.objectContaining({ sourceFile: "src/index.ts", targetFile: "src/local.ts", specifier: "./local.js" }),
+    ]));
+    expect(relationships).not.toEqual(expect.arrayContaining([expect.objectContaining({ targetFile: "src/feature/thing.ts", specifier: "@feature/thing" })]));
   });
 
   it("collects database evidence from dependencies, clients, schemas, and migrations", () => {
@@ -126,5 +181,18 @@ describe("RepoStory Phase 3 deterministic analysis", () => {
     expect(requestDiagram?.nodes.every((node) => node.evidence.length > 0 && node.explanation.length > 0)).toBe(true);
     expect(requestDiagram?.edges.every((edge) => edge.evidence.length > 0 && edge.explanation?.length)).toBe(true);
     expect(authenticationFlowDiagram("unsupported", repository(nextApiFixture), analyzePhase3(files(nextApiFixture)).findings)).toBeNull();
+  });
+
+  it("keeps the system overview semantic and marks inferred paths", () => {
+    const fixtureFiles = files(nextApiFixture);
+    const phase3 = analyzePhase3(fixtureFiles);
+    const findings = [...analyzeTechnologies(fixtureFiles), ...phase3.findings];
+    const overview = systemOverviewDiagram("analysis-next", repository(nextApiFixture), findings);
+
+    expect(overview).toBeDefined();
+    expect(overview?.nodes.map((node) => node.plainEnglishLabel)).toEqual(expect.arrayContaining(["Person in a browser", "Web interface", "Application server"]));
+    expect(overview?.nodes.map((node) => node.plainEnglishLabel)).not.toContain("Typed JavaScript source");
+    expect(overview?.edges.some((edge) => edge.inferred)).toBe(true);
+    expect(overview?.edges.every((edge) => edge.evidence.length > 0)).toBe(true);
   });
 });

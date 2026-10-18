@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { POST as analyzePost } from "@/app/api/analyze/route";
+import { POST as exportPost } from "@/app/api/exports/route";
 import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
 import { evidenceFor } from "@/analysis/evidence";
 import { filterFiles } from "@/analysis/filter-files";
@@ -67,6 +68,30 @@ describe("security and API boundaries", () => {
     const response = await analyzePost(new Request("http://localhost/api/analyze", { method: "POST", body: JSON.stringify({ repositoryUrl: "http://example.com/repo" }), headers: { "content-type": "application/json" } }));
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "UNSUPPORTED_HOST", retryable: false } });
+  });
+
+  it("rejects malformed and oversized JSON bodies before route work starts", async () => {
+    const malformed = await analyzePost(new Request("http://localhost/api/analyze", { method: "POST", body: "{", headers: { "content-type": "application/json" } }));
+    expect(malformed.status).toBe(400);
+    await expect(malformed.json()).resolves.toMatchObject({ error: { code: "INVALID_REQUEST", retryable: false } });
+
+    const oversized = await analyzePost(new Request("http://localhost/api/analyze", { method: "POST", body: JSON.stringify({ repositoryUrl: `https://github.com/${"a".repeat(9_000)}/repo` }), headers: { "content-type": "application/json" } }));
+    expect(oversized.status).toBe(413);
+    await expect(oversized.json()).resolves.toMatchObject({ error: { code: "REQUEST_TOO_LARGE", retryable: false } });
+
+    const invalidExport = await exportPost(new Request("http://localhost/api/exports", { method: "POST", body: "{", headers: { "content-type": "application/json" } }));
+    expect(invalidExport.status).toBe(400);
+    await expect(invalidExport.json()).resolves.toMatchObject({ error: { code: "INVALID_REQUEST", retryable: false } });
+  });
+
+  it("validates an explicitly selected branch before starting analysis", async () => {
+    const response = await analyzePost(new Request("http://localhost/api/analyze", {
+      method: "POST",
+      body: JSON.stringify({ repositoryUrl: "https://github.com/acme/widget", branch: "feature/../secret" }),
+      headers: { "content-type": "application/json" },
+    }));
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_BRANCH", retryable: false } });
   });
 
   it("escapes Mermaid labels and keeps the requested direction", () => {

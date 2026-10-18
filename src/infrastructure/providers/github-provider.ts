@@ -225,18 +225,20 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
   public constructor(options: GitHubProviderOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.limits = options.limits ?? DEFAULT_LIMITS;
-    this.token = options.token;
+    this.token = options.token?.trim() || undefined;
   }
 
   public async getSnapshot(reference: RepositoryReference, signal?: AbortSignal, budget?: AnalysisBudget): Promise<Result<RepositorySnapshot, AppError>> {
     const headers: HeadersInit = { Accept: "application/vnd.github+json", ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) };
     const base = `https://api.github.com/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.name)}`;
+    const repositoryUrl = `https://github.com/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.name)}`;
+    const fetchOptions: RequestInit = { headers, signal, redirect: "error", cache: "no-store" };
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
 
     try {
       budget?.check();
-      const metaResponse = await this.fetchImpl(base, { headers, signal });
+      const metaResponse = await this.fetchImpl(base, fetchOptions);
       if (!metaResponse.ok) {
         if (metaResponse.status === 404) return err(new AppError({ code: "REPOSITORY_NOT_FOUND", message: "GitHub repository not found." }));
         return err(responseFailure(metaResponse, "metadata"));
@@ -251,7 +253,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       const branch = branchResult.value;
 
       budget?.check();
-      const treeResponse = await this.fetchImpl(`${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`, { headers, signal });
+      const treeResponse = await this.fetchImpl(`${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`, fetchOptions);
       if (!treeResponse.ok) return err(responseFailure(treeResponse, "tree"));
       const treeResult = await readJsonResponse<Record<string, unknown>>(treeResponse, "tree", responseLimit, budget);
       if (!treeResult.ok) return treeResult;
@@ -298,7 +300,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           const itemSize = item.sizeBytes ?? 0;
           if (itemSize > this.limits.maxContentBytes) continue;
           budget?.check();
-          const contentResponse = await this.fetchImpl(`${base}/contents/${encodeGitHubPath(item.path)}?ref=${encodeURIComponent(branch)}`, { headers, signal });
+          const contentResponse = await this.fetchImpl(`${base}/contents/${encodeGitHubPath(item.path)}?ref=${encodeURIComponent(branch)}`, fetchOptions);
           if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
           const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
           if (!contentResult.ok) return contentResult;
@@ -327,11 +329,11 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         id,
         owner: reference.owner,
         name: reference.name,
-        url: typeof metadata.html_url === "string" ? metadata.html_url : reference.url,
+        url: repositoryUrl,
         defaultBranch: metadata.default_branch,
         selectedBranch: branch,
         ...(typeof metadata.description === "string" ? { description: redactSecrets(metadata.description) } : {}),
-        sizeBytes: typeof metadata.size === "number" && Number.isFinite(metadata.size) && metadata.size >= 0 ? metadata.size * 1024 : 0,
+        sizeBytes: typeof metadata.size === "number" && Number.isSafeInteger(metadata.size) && metadata.size >= 0 && metadata.size <= Number.MAX_SAFE_INTEGER / 1024 ? metadata.size * 1024 : 0,
         fileCount: files.length,
       };
       return ok({ repository, files });

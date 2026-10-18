@@ -1,6 +1,7 @@
 import type { AnalysisFinding, ApiRouteFinding, AuthenticationFinding, DatabaseFinding, ExternalIntegrationFinding, ConfidenceLevel, ModuleRelationship } from "@/domain/finding";
 import type { DiagramType } from "@/domain/diagram";
 import type { Repository, RepositoryFile } from "@/domain/repository";
+import type { ArchitectureStory } from "@/domain/architecture-story";
 
 export type AnalysisStatus =
   | "pending"
@@ -35,6 +36,7 @@ export interface AnalysisJob {
   authentication?: AuthenticationFinding[];
   diagramAvailability?: DiagramAvailability[];
   diagramIds: string[];
+  architectureStory?: ArchitectureStory;
   error?: AnalysisError;
   createdAt: string;
   completedAt?: string;
@@ -86,3 +88,10 @@ export interface PlainEnglishExplanation {
   technicalDetail?: string;
   confidence: ConfidenceLevel;
 }
+
+export type {
+  ArchitectureActor,
+  ArchitectureLayer,
+  ArchitectureStep,
+  ArchitectureStory,
+} from "@/domain/architecture-story";
