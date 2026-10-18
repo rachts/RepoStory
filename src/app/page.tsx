@@ -82,7 +82,7 @@ export default function Home(): React.JSX.Element {
       </section>
 
       <section className="steps page-width" aria-labelledby="how-it-works"><div className="section-rule" /><p className="eyebrow" id="how-it-works"><span className="eyebrow-line" /> From repository to story</p><div className="step-grid"><Step number="01" title="Point to a repo" body="Share a public GitHub URL. We read the structure, not your secrets." /><Step number="02" title="We find the signal" body="Files, entry points, technologies, and connections become evidence." /><Step number="03" title="Get the story" body="Explore diagrams in technical detail or plain English, then take them with you." /></div></section>
-      <footer className="site-footer page-width"><span>RepoStory / Phase 3</span><span>Built for clarity</span></footer>
+      <footer className="site-footer page-width"><span>Built for clarity</span></footer>
     </main>
   );
 }
