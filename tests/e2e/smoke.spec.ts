@@ -30,9 +30,9 @@ test("edits a deterministic diagram and exports the saved Markdown", async ({ pa
   await page.goto("/analysis/e2e-analysis");
   await expect(page.getByText("Repository structure").first()).toBeVisible();
   await page.getByLabel("Title").fill("Edited title");
-  await page.getByLabel("Element").selectOption("node:repo");
+  await page.getByRole("combobox", { name: "Element" }).selectOption("node:repo");
   await page.getByLabel("Plain-English label").fill("The repository map");
-  await page.getByLabel("Element").selectOption("edge:repo-edge");
+  await page.getByRole("combobox", { name: "Element" }).selectOption("edge:repo-edge");
   await page.getByRole("button", { name: "Hide selected element" }).click();
   await page.getByLabel("Direction").selectOption("LR");
   await page.getByRole("button", { name: "Save changes" }).click();
@@ -77,7 +77,7 @@ test("explains a deterministic fixture in plain English before technical evidenc
   await expect(page.getByRole("heading", { level: 1, name: "How fixture-app works" })).toBeVisible();
   await expect(page.getByText("A person starts an action.")).toBeVisible();
   await expect(page.getByLabel("How to read this diagram")).toBeVisible();
-  await page.getByLabel("Element").selectOption("node:system-frontend");
+  await page.getByRole("combobox", { name: "Element" }).selectOption("node:system-frontend");
   await expect(page.getByRole("heading", { level: 3, name: "Web interface" })).toBeVisible();
   await expect(page.getByText("What it does")).toBeVisible();
   await page.getByRole("button", { name: "Technical" }).click();

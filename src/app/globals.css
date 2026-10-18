@@ -101,7 +101,7 @@ button:disabled { cursor:wait; opacity:.72; }
 .editor-panel-intro { max-width:220px; margin:0; color:var(--muted); font-size:11px; line-height:1.45; }
 .editor-section { padding-top:20px; }
 .editor-section + .editor-section { margin-top:20px; border-top:1px solid var(--line); }
-.editor-section-label { margin:0 0 14px; color:var(--muted); font:700 10px var(--font-mono); letter-spacing:.08em; text-transform:uppercase; }
+.editor-section-label { margin:0 0 14px; color:var(--muted); font:700 10px var(--font-mono); letter-spacing:.08em; text-transform:uppercase; white-space:nowrap; }
 .editor-section-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
 .editor-section-heading .editor-section-label { margin-bottom:0; }
 .editor-selection-status,.node-detail-status { color:var(--muted); font:10px var(--font-mono); letter-spacing:.04em; text-transform:uppercase; }
