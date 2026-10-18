@@ -166,6 +166,8 @@ describe("RepoAnalysis diagram navigation", () => {
     expect(await screen.findByRole("heading", { level: 1, name: "How ui-fixture works" })).toBeInTheDocument();
     expect(screen.getByText("A person starts an action.")).toBeInTheDocument();
     expect(screen.getByLabelText("How to read this diagram")).toBeInTheDocument();
+    expect(screen.getByText("Choose a node or connection")).toBeInTheDocument();
+    expect(screen.getAllByText("Nothing selected")).toHaveLength(2);
     expect(screen.getByText((_content, element) => element?.textContent === "4 files analyzed")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "System overview" })).toBeInTheDocument();
     const flow = screen.getByTestId("react-flow");

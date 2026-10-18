@@ -326,7 +326,7 @@ function HowToReadDiagram(): React.JSX.Element {
 }
 
 function NodeDetailPanel({ diagram, selectedNode }: { diagram: Diagram; selectedNode: DiagramNode | null }): React.JSX.Element {
-  if (!selectedNode) return <section className="node-detail-panel node-detail-empty"><p className="eyebrow"><span className="eyebrow-line" /> Selected part</p><p>Select a box in the diagram to see its plain-English meaning and source evidence.</p></section>;
+  if (!selectedNode) return <section className="node-detail-panel node-detail-empty" aria-labelledby="selected-part-heading"><div className="node-detail-heading"><p className="eyebrow" id="selected-part-heading"><span className="eyebrow-line" /> Selected part</p><span className="node-detail-status">Nothing selected</span></div><p>Select a box in the diagram to see its plain-English meaning and source evidence.</p></section>;
   const connected = diagram.edges.filter((edge) => edge.visible && (edge.source === selectedNode.id || edge.target === selectedNode.id)).map((edge) => {
     const otherId = edge.source === selectedNode.id ? edge.target : edge.source;
     return diagram.nodes.find((node) => node.id === otherId)?.plainEnglishLabel ?? otherId;
@@ -336,7 +336,29 @@ function NodeDetailPanel({ diagram, selectedNode }: { diagram: Diagram; selected
 }
 
 function EditorPanel({ diagram, selectedNode, selectedEdge, onDiagramChange, onNodeChange, onEdgeChange, onSelect }: { diagram: Diagram; selectedNode: DiagramNode | null; selectedEdge: DiagramEdge | null; onDiagramChange: (updates: Partial<Diagram>) => void; onNodeChange: (updates: Partial<DiagramNode>) => void; onEdgeChange: (updates: Partial<DiagramEdge>) => void; onSelect: (selection: { type: "node" | "edge"; id: string } | null) => void }): React.JSX.Element {
-  return <aside className="editor-panel"><p className="eyebrow"><span className="eyebrow-line" /> Properties</p><label>Title<input value={diagram.title} onChange={(event) => onDiagramChange({ title: event.target.value })} /></label><label>Description<textarea value={diagram.description} onChange={(event) => onDiagramChange({ description: event.target.value })} /></label><label>Custom note<textarea value={diagram.customNote ?? ""} onChange={(event) => onDiagramChange({ customNote: event.target.value })} placeholder="Optional note for readers" /></label><label>Element<select value={selectedNode ? `node:${selectedNode.id}` : selectedEdge ? `edge:${selectedEdge.id}` : ""} onChange={(event) => { const [type, id] = event.target.value.split(":"); onSelect(type && id ? { type: type as "node" | "edge", id } : null); }}><option value="">Select an element</option><optgroup label="Nodes">{diagram.nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>{node.technicalLabel}</option>)}</optgroup><optgroup label="Edges">{diagram.edges.map((edge) => <option key={edge.id} value={`edge:${edge.id}`}>{edge.label}</option>)}</optgroup></select></label>{selectedNode ? <><label>Technical label<input value={selectedNode.technicalLabel} onChange={(event) => onNodeChange({ technicalLabel: event.target.value })} /></label><label>Plain-English label<input value={selectedNode.plainEnglishLabel} onChange={(event) => onNodeChange({ plainEnglishLabel: event.target.value })} /></label><label>Explanation<textarea value={selectedNode.explanation} onChange={(event) => onNodeChange({ explanation: event.target.value })} /></label><VisibilityButton visible={selectedNode.visible} onClick={() => onNodeChange({ visible: !selectedNode.visible })} /></> : selectedEdge ? <><label>Edge label<input value={selectedEdge.label} onChange={(event) => onEdgeChange({ label: event.target.value })} /></label><label>Explanation<textarea value={selectedEdge.explanation ?? ""} onChange={(event) => onEdgeChange({ explanation: event.target.value })} /></label><VisibilityButton visible={selectedEdge.visible} onClick={() => onEdgeChange({ visible: !selectedEdge.visible })} /></> : <p className="muted">Select a node or connection on the canvas to edit it. Evidence stays read-only.</p>}</aside>;
+  const selectionLabel = selectedNode || selectedEdge ? "Editing" : "Nothing selected";
+
+  return <aside className="editor-panel" aria-labelledby="editor-panel-heading">
+    <div className="editor-panel-header">
+      <p className="eyebrow"><span className="eyebrow-line" /> Properties</p>
+      <h3 id="editor-panel-heading">Shape the map for readers</h3>
+      <p className="editor-panel-intro">Edit the labels and notes that appear in exports. Evidence stays read-only.</p>
+    </div>
+    <section className="editor-section" aria-labelledby="map-details-heading">
+      <p className="editor-section-label" id="map-details-heading">Map details</p>
+      <label>Title<input value={diagram.title} onChange={(event) => onDiagramChange({ title: event.target.value })} /></label>
+      <label>Description<textarea value={diagram.description} onChange={(event) => onDiagramChange({ description: event.target.value })} /></label>
+      <label>Custom note<textarea value={diagram.customNote ?? ""} onChange={(event) => onDiagramChange({ customNote: event.target.value })} placeholder="Optional note for readers" /></label>
+    </section>
+    <section className="editor-section" aria-labelledby="element-details-heading">
+      <div className="editor-section-heading">
+        <p className="editor-section-label" id="element-details-heading">Selected element</p>
+        <span className="editor-selection-status">{selectionLabel}</span>
+      </div>
+      <label>Element<select value={selectedNode ? `node:${selectedNode.id}` : selectedEdge ? `edge:${selectedEdge.id}` : ""} onChange={(event) => { const [type, id] = event.target.value.split(":"); onSelect(type && id ? { type: type as "node" | "edge", id } : null); }}><option value="">Select an element</option><optgroup label="Nodes">{diagram.nodes.map((node) => <option key={node.id} value={`node:${node.id}`}>{node.technicalLabel}</option>)}</optgroup><optgroup label="Edges">{diagram.edges.map((edge) => <option key={edge.id} value={`edge:${edge.id}`}>{edge.label}</option>)}</optgroup></select></label>
+      {selectedNode ? <div className="editor-element-fields"><label>Technical label<input value={selectedNode.technicalLabel} onChange={(event) => onNodeChange({ technicalLabel: event.target.value })} /></label><label>Plain-English label<input value={selectedNode.plainEnglishLabel} onChange={(event) => onNodeChange({ plainEnglishLabel: event.target.value })} /></label><label>Explanation<textarea value={selectedNode.explanation} onChange={(event) => onNodeChange({ explanation: event.target.value })} /></label><VisibilityButton visible={selectedNode.visible} onClick={() => onNodeChange({ visible: !selectedNode.visible })} /></div> : selectedEdge ? <div className="editor-element-fields"><label>Edge label<input value={selectedEdge.label} onChange={(event) => onEdgeChange({ label: event.target.value })} /></label><label>Explanation<textarea value={selectedEdge.explanation ?? ""} onChange={(event) => onEdgeChange({ explanation: event.target.value })} /></label><VisibilityButton visible={selectedEdge.visible} onClick={() => onEdgeChange({ visible: !selectedEdge.visible })} /></div> : <p className="editor-empty-help"><span className="editor-empty-icon" aria-hidden="true">↗</span><span><strong>Choose a node or connection</strong><small>Select it on the canvas or from the menu above to edit its label and explanation.</small></span></p>}
+    </section>
+  </aside>;
 }
 
 function VisibilityButton({ visible, onClick }: { visible: boolean; onClick: () => void }): React.JSX.Element { return <button className="secondary-button" onClick={onClick}>{visible ? "Hide" : "Show"} selected element</button>; }
