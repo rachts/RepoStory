@@ -7,9 +7,11 @@ import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/r
 import type { AnalysisJob } from "@/domain/analysis";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { Diagram, DiagramDirection, DiagramEdge, DiagramNode, DiagramType } from "@/domain/diagram";
+import { toMarkdown, toMermaid } from "@/analysis/exports";
 
 interface AnalysisResponse extends AnalysisJob { diagrams: Diagram[]; architectureStory?: ArchitectureStory }
 interface ExportResponse { content: string; filename: string; mimeType: string }
+interface ExportErrorResponse { error?: { code?: string; message?: string } }
 interface RepoAnalysisProps { analysisId: string }
 
 const SUPPORTED_DIAGRAM_TYPES: readonly DiagramType[] = ["repository-structure", "system-overview", "api-request-flow", "authentication-flow"];
@@ -156,11 +158,19 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
       }
       if (requestId !== exportRequestRef.current || revision !== draftRevisionRef.current) throw new Error("The diagram changed while exporting. No export was copied; try again.");
       setExportState("exporting");
-       const response = await fetch("/api/exports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ diagramId: requestedDiagram.id, format, includeExplanation: true, includeEvidence: true, includeAttribution: false, includeArchitectureSummary: format === "markdown" && includeArchitectureSummary }) });
-      const payload = await response.json().catch(() => null) as ExportResponse | { error?: { message?: string } } | null;
-      if (!response.ok || !payload || !("content" in payload)) throw new Error((payload as { error?: { message?: string } } | null)?.error?.message ?? "The export could not be generated.");
+      const response = await fetch("/api/exports", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ diagramId: requestedDiagram.id, format, includeExplanation: true, includeEvidence: true, includeAttribution: false, includeArchitectureSummary: format === "markdown" && includeArchitectureSummary }) });
+      const payload = await response.json().catch(() => null) as ExportResponse | ExportErrorResponse | null;
+      let content: string;
+      if (response.status === 404 && (payload as ExportErrorResponse | null)?.error?.code === "DIAGRAM_NOT_FOUND") {
+        content = format === "mermaid"
+          ? toMermaid(requestedDiagram)
+          : toMarkdown(requestedDiagram, { includeExplanation: true, includeEvidence: true, includeAttribution: false, includeArchitectureSummary, architectureStory: analysis?.architectureStory });
+      } else {
+        if (!response.ok || !payload || !("content" in payload)) throw new Error((payload as ExportErrorResponse | null)?.error?.message ?? "The export could not be generated.");
+        content = payload.content;
+      }
       if (requestId !== exportRequestRef.current || revision !== draftRevisionRef.current) throw new Error("The diagram changed while exporting. No export was copied; try again.");
-      await navigator.clipboard.writeText(payload.content);
+      await navigator.clipboard.writeText(content);
       setFeedback(`${format === "markdown" ? "README Markdown" : "Mermaid"} copied`); window.setTimeout(() => setFeedback(""), 1800);
     } catch (exportRequestError) {
       if (requestId === exportRequestRef.current) setExportError(exportRequestError instanceof Error ? exportRequestError.message : "The export could not be generated.");
