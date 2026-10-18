@@ -118,6 +118,7 @@ the analyzed application or prove runtime behavior.
 | Authentication evidence | Detects configured providers and patterns for Auth.js/NextAuth, Clerk, Supabase Auth, JWT, sessions, OAuth/OpenID Connect, and authentication-aware middleware. | **Available**, but it does not execute or verify a login flow. |
 | Evidence references | Attaches file paths, line information, redacted excerpts, and reasons to findings and diagram elements. | **Available**. |
 | Confidence levels | Carries `high`, `medium`, `low`, and `needs-verification` through the domain model. | **Available**; the current detectors primarily emit high, medium, and needs-verification findings. |
+| Plain-English architecture story | Leads with what the application appears to do, then shows request steps, coverage, confidence, caveats, and source-backed technical evidence. | **Available**; the narrative stays conservative when a diagram or request flow is unavailable. |
 | Repository structure diagram | Maps the repository name to detected top-level directories. | **Available** for completed analyses. |
 | System overview diagram | Connects a user, application, and detected technologies when technology evidence exists. | **Conditional**. |
 | API request-flow diagram | Connects a client, detected routes, related local modules, database evidence, and integration evidence. | **Conditional** on route evidence. |
@@ -408,6 +409,10 @@ authentication system.
 - **Server-side GitHub access.** GitHub requests are made by the provider used
   by the Next.js route handler. `GITHUB_TOKEN` is read from server-side
   environment configuration and is not part of the browser request body.
+- **Browser and response hardening.** The Next.js configuration disables the
+  framework signature and sends `nosniff`, same-origin framing/resource policies,
+  a strict referrer policy, a restrictive permissions policy, and cross-origin
+  opener isolation. API and liveness responses use `Cache-Control: no-store`.
 - **Fixed upstream host.** The provider constructs requests against
   `https://api.github.com`; the submitted repository URL is not used as an
   arbitrary fetch target.
@@ -546,15 +551,24 @@ listens on port `3000` by default.
 ### Docker
 
 A multi-stage `Dockerfile` is committed. It pins `node:22.14.0-alpine`, builds
-the standalone Next.js output, creates a non-root `nextjs` user, exposes port
-3000, and starts `server.js`.
+the standalone Next.js output, creates a non-root `nextjs` user, binds the
+standalone server to `0.0.0.0`, exposes port 3000, and declares a health check
+against `/api/health`.
 
 The Docker path is **not verified in this environment** because the Docker CLI
-is unavailable here. When Docker is available, the committed commands are:
+is unavailable here. When Docker is available, build and run the local
+deployment artifact with:
 
 ```bash
-docker build -t repo-story .
-docker run --rm -p 3000:3000 repo-story
+docker build --tag repo-story:local .
+docker run --rm --name repo-story --publish 3000:3000 --env-file .env.local repo-story:local
+```
+
+The container runs in the foreground; press `Ctrl-C` to stop it. In another
+terminal, verify the deployment with:
+
+```bash
+curl --fail --show-error http://localhost:3000/api/health
 ```
 
 Do not treat the Dockerfile's presence as proof that a particular hosting
@@ -828,8 +842,16 @@ npm run test:e2e
 
 The Playwright configuration starts `npm run dev` at
 `http://127.0.0.1:3000` and uses the Chromium device profile. The repository
-does not define a separate browser-install script; a machine running the E2E
-command must have the Playwright browser available.
+does not download browsers during `npm ci`; install the pinned Chromium browser
+once before the E2E command when it is not already available:
+
+```bash
+npx playwright install chromium
+```
+
+The canonical `make test` command remains fully offline after dependencies have
+been installed because it uses only the committed fixtures and does not start a
+browser or call GitHub.
 
 ## Current limitations
 
@@ -865,6 +887,12 @@ The following limitations are visible in the current codebase:
   README update.
 - **Heuristic secret handling.** The redaction rules are defense-in-depth
   patterns, not a guarantee that every possible secret format is detected.
+- **Development-tool audit note.** `npm audit --omit=dev --audit-level=high`
+  reports no production dependency vulnerabilities. A full audit still reports
+  the unresolved `braces` advisory through the Next.js ESLint configuration;
+  `npm audit fix --force` would downgrade `eslint-config-next` across major
+  versions, so it is not applied. Revisit this when the upstream lint dependency
+  publishes a fixed release.
 
 ## Roadmap
 

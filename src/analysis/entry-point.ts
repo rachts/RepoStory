@@ -1,3 +1,38 @@
-import type { AnalysisFinding } from "@/domain/finding"; import type { RepositoryFile } from "@/domain/repository"; import type { AnalysisBudget } from "@/shared/limits"; import { stableId } from "@/shared/ids"; import { evidenceFor } from "@/analysis/evidence"; import { redactPath, redactSecrets } from "@/shared/redaction";
+import type { AnalysisFinding } from "@/domain/finding";
+import type { RepositoryFile } from "@/domain/repository";
+import type { AnalysisBudget } from "@/shared/limits";
+import { evidenceFor } from "@/analysis/evidence";
+import { sourceFiles } from "@/analysis/static-utils";
+import { stableId } from "@/shared/ids";
+import { redactPath, redactSecrets } from "@/shared/redaction";
+import { normalizePath } from "@/shared/text";
+
 const names = [/^README\.md$/i, /^src\/(app\/)?page\.(tsx?|jsx?)$/i, /^(src\/)?index\.(tsx?|jsx?|js)$/i, /^package\.json$/i];
-export function analyzeEntryPoints(files: RepositoryFile[], budget?: AnalysisBudget): AnalysisFinding[] { const matches: RepositoryFile[] = []; for (const file of files) { budget?.check(); let isEntryPoint = false; for (const pattern of names) { budget?.check(); if (pattern.test(file.path)) { isEntryPoint = true; break; } } if (isEntryPoint) matches.push(file); } budget?.check(); matches.sort((a, b) => { budget?.check(); return a.path.localeCompare(b.path); }); budget?.check(); const findings: AnalysisFinding[] = []; for (const file of matches) { budget?.check(); const safeFilePath = redactPath(file.path); findings.push({ id: stableId("entry", file.path), kind: "entry-point" as const, technicalLabel: safeFilePath, plainEnglishLabel: `Start here: ${safeFilePath}`, explanation: redactSecrets("This conventional file is a likely orientation point."), confidence: "medium" as const, evidence: [evidenceFor(file, "conventional entry point")] }); } return findings; }
+
+export function analyzeEntryPoints(files: RepositoryFile[], budget?: AnalysisBudget): AnalysisFinding[] {
+  const matches: RepositoryFile[] = [];
+  for (const file of sourceFiles(files, budget)) {
+    budget?.check();
+    const path = normalizePath(file.path);
+    if (names.some((pattern) => pattern.test(path))) matches.push({ ...file, path });
+  }
+  budget?.check();
+  matches.sort((left, right) => {
+    budget?.check();
+    return left.path.localeCompare(right.path);
+  });
+  budget?.check();
+  return matches.map((file) => {
+    budget?.check();
+    const safeFilePath = redactPath(file.path);
+    return {
+      id: stableId("entry", file.path),
+      kind: "entry-point" as const,
+      technicalLabel: safeFilePath,
+      plainEnglishLabel: `Start here: ${safeFilePath}`,
+      explanation: redactSecrets("This conventional file is a likely orientation point."),
+      confidence: "medium" as const,
+      evidence: [evidenceFor(file, "conventional entry point")],
+    };
+  });
+}

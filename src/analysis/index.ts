@@ -9,3 +9,4 @@ export { analyzeExternalIntegrations, analyzeIntegrations, detectExternalIntegra
 export { analyzeAuthentication, analyzeAuth, analyzeAuthenticationEvidence, detectAuthentication, findAuthenticationEvidence, analyzeAuthEvidence, detectAuth, detectAuthenticationEvidence } from "@/analysis/authentication";
 export { analyzePhase3, analyzePhase3Findings } from "@/analysis/phase3";
 export { apiRequestFlowDiagram, authenticationFlowDiagram, generateApiRequestFlowDiagram, generateAuthenticationFlowDiagram, generateApiRequestFlow, generateAuthenticationFlow, createApiRequestFlowDiagram, createAuthenticationFlowDiagram } from "@/analysis/flow-diagrams";
+export { generateArchitectureStory, createArchitectureStory, architectureStory } from "@/analysis/architecture-story";

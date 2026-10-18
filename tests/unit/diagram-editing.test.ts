@@ -3,6 +3,7 @@ import { applyDiagramPatch } from "@/application/diagram-edits";
 import { InMemoryAnalysisStore } from "@/application/store";
 import { toMarkdown, toMermaid } from "@/analysis/exports";
 import type { Diagram } from "@/domain/diagram";
+import type { ArchitectureStory } from "@/domain/architecture-story";
 
 const diagram: Diagram = {
   id: "diagram-edit", analysisId: "analysis-edit", type: "repository-structure", title: "Original", description: "Original description", direction: "TB", customNote: "Original note",
@@ -91,6 +92,37 @@ describe("diagram editing", () => {
     expect(toMermaid(withHiddenTarget)).not.toContain("edge-hidden-target");
     expect(toMermaid(withHiddenTarget)).not.toContain("uses");
     expect(toMarkdown(withHiddenTarget)).toContain("confidence: high");
+  });
+
+  it("optionally exports the plain-English architecture story before Mermaid", () => {
+    const storyEvidence = [{ id: "story-visible", filePath: "src/app/page.tsx", lineStart: 1, reason: "Shows the visible interface." }];
+    const hiddenEvidence = [{ id: "story-hidden", filePath: "src/hidden.ts", lineStart: 2, reason: "Hidden service evidence." }];
+    const story: ArchitectureStory = {
+      id: "story-export",
+      headline: "How the application works",
+      summary: "The application appears to show a web interface.",
+      plainEnglishSummary: "The application appears to show a web interface.",
+      confidence: "medium",
+      evidence: [...storyEvidence, ...hiddenEvidence],
+      actors: [
+        { id: "visible-actor", kind: "frontend", label: "Frontend", technicalLabel: "React frontend", plainEnglishLabel: "Web interface", explanation: "The visible interface.", inferred: false, confidence: "high", evidence: storyEvidence, sourceNodeIds: ["repo"], sourceDiagramTypes: ["system-overview"] },
+        { id: "hidden-actor", kind: "external-service", label: "Hidden", technicalLabel: "Hidden service", plainEnglishLabel: "Hidden service", explanation: "Should not export.", inferred: false, confidence: "high", evidence: hiddenEvidence, sourceNodeIds: ["hidden"], sourceDiagramTypes: ["system-overview"] },
+      ],
+      steps: [{ id: "visible-step", kind: "application", order: 1, layerId: "layer", title: "The interface is shown", plainEnglishTitle: "The interface is shown", technicalLabel: "render", plainEnglishLabel: "The interface is shown", explanation: "The visible step.", confidence: "high", evidence: storyEvidence, sourceNodeIds: ["repo"], targetNodeIds: [], sourceDiagramTypes: ["system-overview"] }, { id: "hidden-step", kind: "external-service", order: 2, layerId: "layer", title: "Hidden service", plainEnglishTitle: "Hidden service", technicalLabel: "secretCall", plainEnglishLabel: "Hidden service", explanation: "Should not export.", confidence: "high", evidence: hiddenEvidence, sourceNodeIds: ["hidden"], targetNodeIds: [], sourceDiagramTypes: ["system-overview"] }],
+      layers: [{ id: "layer", kind: "application", order: 1, label: "application", technicalLabel: "application", plainEnglishLabel: "Application", purpose: "Application layer.", explanation: "Application layer.", nodeIds: ["repo"], actorIds: ["visible-actor"], stepIds: ["visible-step"], relationshipIds: [], confidence: "high", evidence: storyEvidence, sourceDiagramTypes: ["system-overview"] }],
+      relationships: [],
+      coverage: { status: "partial", partial: true, filesAnalyzed: 1, filesDiscovered: 2, analyzedFiles: 1, discoveredFiles: 2, evidenceBackedFindings: 1, evidenceBackedElements: 2, availableDiagramTypes: ["system-overview"], unavailableDiagramTypes: [], diagramAvailability: [], repositoryStructureAvailable: true, systemOverviewAvailable: true, apiRequestFlowAvailable: false, authenticationFlowAvailable: false, caveats: ["Partial coverage."] },
+      caveats: ["Partial coverage."],
+    };
+    const withHiddenNode: Diagram = { ...diagram, nodes: [...diagram.nodes, { id: "hidden", technicalLabel: "hidden", plainEnglishLabel: "Hidden service", explanation: "Hidden", kind: "service", visible: false, confidence: "high", evidence: hiddenEvidence }] };
+    const enabled = toMarkdown(withHiddenNode, { includeArchitectureSummary: true, includeEvidence: true, architectureStory: story });
+    const disabled = toMarkdown(withHiddenNode, { includeArchitectureSummary: false, includeEvidence: true, architectureStory: story });
+    expect(enabled.indexOf("## How the application works")).toBeLessThan(enabled.indexOf("```mermaid"));
+    expect(enabled).toContain("The application appears to show a web interface\\.");
+    expect(enabled).toContain("Evidence: path: src/app/page\\.tsx");
+    expect(enabled).not.toContain("Hidden service");
+    expect(enabled).not.toContain("src/hidden.ts");
+    expect(disabled).not.toContain("## How the application works");
   });
 
   it("restores the generated diagram without losing its evidence", () => {

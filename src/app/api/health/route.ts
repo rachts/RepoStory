@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
+import { jsonResponse } from "@/shared/http";
 
 export function GET(): NextResponse {
-  return NextResponse.json({ status: "ok", service: "repo-story" });
+  return jsonResponse({ status: "ok", service: "repo-story" });
 }

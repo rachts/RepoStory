@@ -34,7 +34,8 @@ export interface AnalysisBudget {
 }
 
 export function createAnalysisBudget(maxMs: number, now: () => number = Date.now, signal?: AbortSignal): AnalysisBudget {
-  const deadline = now() + maxMs;
+  const duration = Number.isFinite(maxMs) && maxMs >= 0 ? maxMs : DEFAULT_LIMITS.maxAnalysisMs;
+  const deadline = now() + duration;
   return {
     check(): void {
       if (signal?.aborted || now() >= deadline) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });

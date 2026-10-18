@@ -21,10 +21,14 @@ import { FixtureRepositoryProvider } from "@/infrastructure/providers/fixture-pr
 import { GitHubPublicRepositoryProvider } from "@/infrastructure/providers/github-provider";
 import { parseGitHubUrl } from "@/infrastructure/providers/github-url";
 import { filterFiles } from "@/analysis/filter-files";
+import { analyzeTechnologies } from "@/analysis/technology";
+import { analyzeEntryPoints } from "@/analysis/entry-point";
+import { analyzeDirectories } from "@/analysis/directory";
 import { isSecretBearingPath, redactSecrets } from "@/shared/redaction";
 import { redactPath } from "@/shared/redaction";
+import { truncate } from "@/shared/text";
 import { ok } from "@/shared/result";
-import { DEFAULT_LIMITS, type AnalysisBudget } from "@/shared/limits";
+import { createAnalysisBudget, DEFAULT_LIMITS, type AnalysisBudget } from "@/shared/limits";
 
 const limits = {
   maxFiles: 10,
@@ -82,6 +86,49 @@ describe("Phase 3 remediation reproductions", () => {
     ], { ...limits, maxFiles: 2 });
 
     expect(selected.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
+  });
+
+  it("uses UTF-8 byte sizes and rejects malformed file metadata", () => {
+    const unicode = filterFiles([{ path: "src/unicode.ts", type: "file", content: "😀😀", isAnalyzable: true }], { ...limits, maxFileBytes: 7 });
+    expect(unicode).toEqual([]);
+
+    const malformed = filterFiles([{ path: "src/malformed.ts", type: "file", sizeBytes: -1, content: "ok", isAnalyzable: true }], limits);
+    expect(malformed).toEqual([]);
+
+    const normalized = filterFiles([{ path: "src\\normalized.ts", type: "file", content: "ok", isAnalyzable: true }], limits);
+    expect(normalized[0]?.path).toBe("src/normalized.ts");
+
+    expect(filterFiles([{ path: "src/../secret.ts", type: "file", content: "ok", isAnalyzable: true }])).toEqual([]);
+    expect(filterFiles([{ path: "src", type: "directory", isAnalyzable: true }])).toEqual([]);
+    expect(filterFiles([{ path: "Dockerfile", type: "file", content: "FROM node:22", isAnalyzable: true }])).toHaveLength(1);
+  });
+
+  it("does not claim technologies or entry points from directories or filename-only matches", () => {
+    const files: RepositoryFile[] = [
+      { path: "package.json", type: "file", content: '{"dependencies":{"lodash":"1.0.0"}}', isAnalyzable: true },
+      { path: "src/page.tsx", type: "file", content: "export const notAReactComponent = true;", isAnalyzable: true },
+      { path: "src/page.tsx", type: "directory", content: "", isAnalyzable: true },
+      { path: "src\\index.ts", type: "file", content: "export const value = 1;", isAnalyzable: true },
+    ];
+
+    expect(analyzeTechnologies(files).map((finding) => finding.technicalLabel)).toEqual([]);
+    expect(analyzeEntryPoints(files).map((finding) => finding.technicalLabel)).toEqual(["package.json", "src/index.ts", "src/page.tsx"]);
+    expect(analyzeDirectories(files).map((finding) => finding.technicalLabel)).toEqual(["src"]);
+  });
+
+  it("fails closed for invalid analysis budget durations", () => {
+    const budget = createAnalysisBudget(-1, () => 0);
+    expect(() => budget.check()).not.toThrow();
+
+    const immediate = createAnalysisBudget(0, () => 0);
+    expect(() => immediate.check()).toThrowError(expect.objectContaining({ code: "ANALYSIS_TIMEOUT" }));
+  });
+
+  it("handles zero, fractional, and unbounded text limits predictably", () => {
+    expect(truncate("secret", 0)).toBe("");
+    expect(truncate("abcdef", 3.9)).toBe("ab…");
+    expect(truncate("secret", Number.POSITIVE_INFINITY)).toBe("secret");
+    expect(truncate("secret", Number.NaN)).toBe("");
   });
 
   it("redacts literal special-character values while keeping narrow dynamic references", () => {
@@ -285,6 +332,10 @@ describe("Phase 3 remediation reproductions", () => {
     expect(parseGitHubUrl("https://github.com/acme/widget/tree/feature/../secret")).toMatchObject({ ok: false, error: { code: "INVALID_URL" } });
   });
 
+  it.each(["feature:bad", "feature~bad", "feature/.hidden", "feature/release.lock", "feature/@{bad}"])("rejects invalid Git ref branch component %s", (branch) => {
+    expect(parseGitHubUrl(`https://github.com/acme/widget/tree/${encodeURIComponent(branch)}`)).toMatchObject({ ok: false, error: { code: "INVALID_URL" } });
+  });
+
   it("keeps untrusted Markdown text from changing document structure", () => {
     const markdown = toMarkdown(diagramWithUntrustedText());
     expect(markdown).not.toContain("<script>");
@@ -292,6 +343,19 @@ describe("Phase 3 remediation reproductions", () => {
     expect(markdown).not.toMatch(/^> injected quote$/m);
     expect(markdown).not.toMatch(/\[malicious\]\(https:\/\/example\.com\)/);
     expect(markdown).not.toMatch(/`code`/);
+  });
+
+  it("sanitizes Mermaid node identifiers independently from visible labels", () => {
+    const unsafe = diagramWithUntrustedText();
+    const mermaid = toMermaid({
+      ...unsafe,
+      nodes: [{ ...unsafe.nodes[0]!, id: "node id\nwith\\escape" }],
+      edges: [{ id: "edge id", source: "node id\nwith\\escape", target: "node id\nwith\\escape", label: "self", visible: true, confidence: "high", evidence: [] }],
+    });
+
+    expect(mermaid).not.toContain("node id\nwith\\escape");
+    expect(mermaid).toMatch(/flowchart TB\n  node_id_with_escape\["/);
+    expect(mermaid).not.toContain("\\escape");
   });
 
   it("gives repeated analyses of one repository different IDs", async () => {
@@ -323,6 +387,21 @@ describe("Phase 3 remediation reproductions", () => {
     now = 101;
     expect(store.get("analysis-b")).toBeUndefined();
     expect(store.getDiagram("diagram-b")).toBeUndefined();
+  });
+
+  it("does not resurrect an analysis after capacity eviction", () => {
+    const store = new InMemoryAnalysisStore({ maxAnalyses: 1, ttlMs: 10_000 });
+    const job = (id: string): AnalysisJob => ({ id, repository: { id, owner: "fixture", name: id, url: `https://github.com/fixture/${id}`, defaultBranch: "main", selectedBranch: "main", sizeBytes: 0, fileCount: 0 }, status: "running", stage: "fetching-metadata", progressPercent: 10, filesDiscovered: 0, filesAnalyzed: 0, technologies: [], findings: [], diagramIds: [], createdAt: new Date(0).toISOString() });
+    store.startAnalysis?.("analysis-a");
+    store.save(job("analysis-a"));
+    store.save(job("analysis-b"));
+    store.saveDiagram({ ...diagramWithUntrustedText(), id: "diagram-a-after-eviction", analysisId: "analysis-a" });
+    store.save(job("analysis-a"));
+    store.finishAnalysis?.("analysis-a");
+
+    expect(store.get("analysis-a")).toBeUndefined();
+    expect(store.getDiagram("diagram-a-after-eviction")).toBeUndefined();
+    expect(store.get("analysis-b")).toBeDefined();
   });
 
   it("returns a structured timeout when the full pipeline deadline is exceeded", async () => {
@@ -558,5 +637,22 @@ describe("Phase 3 remediation reproductions", () => {
     } });
     const invalidBase64 = await invalidBase64Provider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" });
     expect(invalidBase64.ok).toBe(false);
+  });
+
+  it("disables upstream redirects and caches while keeping repository URLs canonical", async () => {
+    const requests: RequestInit[] = [];
+    const provider = new GitHubPublicRepositoryProvider({ fetchImpl: async (input, init) => {
+      requests.push(init ?? {});
+      const url = String(input);
+      if (url.endsWith("/repos/acme/widget")) return new Response(JSON.stringify({ id: 1, default_branch: "main", html_url: "https://evil.example/redirect" }));
+      return new Response(JSON.stringify({ tree: [] }));
+    } });
+
+    const result = await provider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.repository.url).toBe("https://github.com/acme/widget");
+    expect(requests).toHaveLength(2);
+    expect(requests.every((request) => request.redirect === "error" && request.cache === "no-store")).toBe(true);
   });
 });

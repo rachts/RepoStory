@@ -2,8 +2,7 @@ import type { ModuleRelationship } from "@/domain/finding";
 import type { RepositoryFile } from "@/domain/repository";
 import type { AnalysisBudget } from "@/shared/limits";
 import { DEFAULT_LIMITS } from "@/shared/limits";
-import { evidenceForPattern, fileContent, linePattern, moduleAliases, resolveLocalModule, safePath, safeText, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
-import { normalizePath } from "@/shared/text";
+import { evidenceForPattern, fileContent, linePattern, moduleAliases, normalizeModulePath, resolveLocalModule, safePath, safeText, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
 import { stableId } from "@/shared/ids";
 
 interface ImportCandidate {
@@ -51,9 +50,9 @@ export function analyzeModuleRelationships(files: RepositoryFile[], budget?: Ana
   const fileByPath = new Map<string, RepositoryFile>();
   for (const file of analyzable) {
     budget?.check();
-    const normalizedPath = normalizePath(file.path);
+    const normalizedPath = normalizeModulePath(file.path);
     knownPaths.add(normalizedPath);
-    fileByPath.set(normalizedPath, file);
+    if (!fileByPath.has(normalizedPath)) fileByPath.set(normalizedPath, file);
   }
   const aliases = moduleAliases(analyzable, budget);
   const relationships: ModuleRelationship[] = [];
