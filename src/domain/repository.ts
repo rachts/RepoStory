@@ -33,5 +33,5 @@ export interface RepositorySnapshot {
 }
 
 export interface RepositoryProvider {
-  getSnapshot(reference: RepositoryReference, signal?: AbortSignal): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
+  getSnapshot(reference: RepositoryReference, signal?: AbortSignal, budget?: import("@/shared/limits").AnalysisBudget): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
 }

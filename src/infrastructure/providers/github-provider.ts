@@ -1,7 +1,7 @@
 import type { RepositoryProvider, RepositoryReference, RepositorySnapshot, RepositoryFile } from "@/domain/repository";
 import { AppError } from "@/domain/errors";
 import { err, ok, type Result } from "@/shared/result";
-import { DEFAULT_LIMITS, type AnalysisLimits } from "@/shared/limits";
+import { DEFAULT_LIMITS, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
 import { filterFiles } from "@/analysis/filter-files";
 import { validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { redactSecrets } from "@/shared/redaction";
@@ -29,9 +29,15 @@ function invalidResponse(stage: string): AppError {
   return new AppError({ code: "GITHUB_INVALID_RESPONSE", message: `GitHub ${stage} response was invalid.` });
 }
 
+function treeTooLarge(maxEntries: number): AppError {
+  return new AppError({ code: "REPOSITORY_TOO_LARGE", message: "GitHub repository tree contains too many entries to analyze safely.", details: { maxEntries } });
+}
+
 function responseFailure(response: Response, stage: string): AppError {
-  if (response.status === 403 || response.status === 429) {
-    return new AppError({ code: "GITHUB_RATE_LIMITED", message: "GitHub API rate limit reached.", retryable: true });
+  if (response.status === 429 || (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")) {
+    const reset = response.headers.get("x-ratelimit-reset");
+    const resetEpoch = reset && /^\d+$/.test(reset) ? Number(reset) : undefined;
+    return new AppError({ code: "GITHUB_RATE_LIMITED", message: "GitHub API rate limit reached. Add GITHUB_TOKEN or retry after the limit resets.", retryable: true, details: resetEpoch ? { resetAt: resetEpoch } : undefined });
   }
   return new AppError({
     code: "REPOSITORY_INACCESSIBLE",
@@ -84,7 +90,23 @@ function encodeGitHubPath(path: string): string {
   return path.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
-async function readResponseText(response: Response, stage: string, maxBytes: number): Promise<JsonResult<string>> {
+function candidatePriority(path: string): number {
+  const normalized = path.toLowerCase();
+  if (/^(package\.json|pyproject\.toml|cargo\.toml|go\.mod|pom\.xml|build\.gradle|composer\.json|gemfile|dockerfile|makefile)$/.test(normalized)) return 0;
+  if (/(^|\/)(app|src|server|api|routes|controllers|services|lib|prisma)(\/|$)/.test(normalized)) return 1;
+  if (/(route|controller|handler|schema|openapi|graphql|\.env\.(example|sample|template)$)/.test(normalized)) return 2;
+  if (/\.(tsx?|jsx?|py|go|rs|java|kt|rb|php|swift|vue|svelte|astro|graphql|gql|mjs|cjs|mts|cts)$/.test(normalized)) return 3;
+  if (/\.(md|json|yml|yaml|toml|sql|prisma|css|scss)$/.test(normalized)) return 4;
+  return 5;
+}
+
+function maxConcurrentRequests(limits: AnalysisLimits): number {
+  const value = limits.maxConcurrentContentRequests ?? DEFAULT_LIMITS.maxConcurrentContentRequests;
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(value, 16) : DEFAULT_LIMITS.maxConcurrentContentRequests;
+}
+
+async function readResponseText(response: Response, stage: string, maxBytes: number, budget?: AnalysisBudget): Promise<JsonResult<string>> {
+  budget?.check();
   const declaredLength = response.headers.get("content-length");
   if (declaredLength !== null) {
     const parsedLength = Number(declaredLength);
@@ -94,6 +116,7 @@ async function readResponseText(response: Response, stage: string, maxBytes: num
   try {
     if (!response.body) {
       const text = await response.text();
+      budget?.check();
       if (Buffer.byteLength(text, "utf8") > maxBytes) return err(responseTooLarge(stage, maxBytes));
       return ok(text);
     }
@@ -103,7 +126,9 @@ async function readResponseText(response: Response, stage: string, maxBytes: num
     let totalBytes = 0;
     try {
       while (true) {
+        budget?.check();
         const result = await reader.read();
+        budget?.check();
         if (result.done) break;
         const chunk = result.value;
         totalBytes += chunk.byteLength;
@@ -116,31 +141,51 @@ async function readResponseText(response: Response, stage: string, maxBytes: num
           return err(responseTooLarge(stage, maxBytes));
         }
         chunks.push(chunk);
+        budget?.check();
       }
+    } catch (error) {
+      if (error instanceof AppError && error.code === "ANALYSIS_TIMEOUT") {
+        try {
+          await reader.cancel();
+        } catch {
+          // The timeout result is the useful result even if cancellation fails.
+        }
+      }
+      throw error;
     } finally {
       reader.releaseLock();
     }
 
+    budget?.check();
     const bytes = new Uint8Array(totalBytes);
     let offset = 0;
     for (const chunk of chunks) {
+      budget?.check();
       bytes.set(chunk, offset);
       offset += chunk.byteLength;
     }
-    return ok(new TextDecoder().decode(bytes));
-  } catch {
+    budget?.check();
+    const text = new TextDecoder().decode(bytes);
+    budget?.check();
+    return ok(text);
+  } catch (error) {
+    if (error instanceof AppError) return err(error);
     return err(new AppError({ code: "GITHUB_RESPONSE_READ_FAILED", message: `Unable to read GitHub ${stage} response.`, retryable: true }));
   }
 }
 
-async function readJsonResponse<T>(response: Response, stage: string, maxBytes: number): Promise<JsonResult<T>> {
-  const body = await readResponseText(response, stage, maxBytes);
+async function readJsonResponse<T>(response: Response, stage: string, maxBytes: number, budget?: AnalysisBudget): Promise<JsonResult<T>> {
+  const body = await readResponseText(response, stage, maxBytes, budget);
   if (!body.ok) return body;
+  budget?.check();
+  let parsed: T;
   try {
-    return ok(JSON.parse(body.value) as T);
+    parsed = JSON.parse(body.value) as T;
   } catch {
     return err(invalidResponse(stage));
   }
+  budget?.check();
+  return ok(parsed);
 }
 
 function isStrictBase64(value: string): boolean {
@@ -183,19 +228,20 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     this.token = options.token;
   }
 
-  public async getSnapshot(reference: RepositoryReference, signal?: AbortSignal): Promise<Result<RepositorySnapshot, AppError>> {
+  public async getSnapshot(reference: RepositoryReference, signal?: AbortSignal, budget?: AnalysisBudget): Promise<Result<RepositorySnapshot, AppError>> {
     const headers: HeadersInit = { Accept: "application/vnd.github+json", ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) };
     const base = `https://api.github.com/repos/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.name)}`;
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
 
     try {
+      budget?.check();
       const metaResponse = await this.fetchImpl(base, { headers, signal });
       if (!metaResponse.ok) {
         if (metaResponse.status === 404) return err(new AppError({ code: "REPOSITORY_NOT_FOUND", message: "GitHub repository not found." }));
         return err(responseFailure(metaResponse, "metadata"));
       }
-      const metadataResult = await readJsonResponse<Record<string, unknown>>(metaResponse, "metadata", responseLimit);
+      const metadataResult = await readJsonResponse<Record<string, unknown>>(metaResponse, "metadata", responseLimit, budget);
       if (!metadataResult.ok) return metadataResult;
       const metadata = metadataResult.value;
       if (!isRecord(metadata) || typeof metadata.default_branch !== "string") return err(invalidResponse("metadata"));
@@ -204,9 +250,10 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       if (!branchResult.ok) return branchResult;
       const branch = branchResult.value;
 
+      budget?.check();
       const treeResponse = await this.fetchImpl(`${base}/git/trees/${encodeURIComponent(branch)}?recursive=1`, { headers, signal });
       if (!treeResponse.ok) return err(responseFailure(treeResponse, "tree"));
-      const treeResult = await readJsonResponse<Record<string, unknown>>(treeResponse, "tree", responseLimit);
+      const treeResult = await readJsonResponse<Record<string, unknown>>(treeResponse, "tree", responseLimit, budget);
       if (!treeResult.ok) return treeResult;
       const treePayload = treeResult.value;
       if (!isRecord(treePayload)) return err(invalidResponse("tree"));
@@ -214,32 +261,66 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         return err(new AppError({ code: "GITHUB_TREE_TRUNCATED", message: "GitHub repository tree was truncated and cannot be analyzed safely." }));
       }
       if (!Array.isArray(treePayload.tree)) return err(invalidResponse("tree"));
+      const configuredMaxTreeEntries = this.limits.maxTreeEntries;
+      const maxTreeEntries = typeof configuredMaxTreeEntries === "number" && Number.isSafeInteger(configuredMaxTreeEntries) && configuredMaxTreeEntries >= 0 ? configuredMaxTreeEntries : DEFAULT_LIMITS.maxTreeEntries;
+      budget?.check();
+      if (treePayload.tree.length > maxTreeEntries) return err(treeTooLarge(maxTreeEntries));
 
       const treeEntries: GitHubTreeEntry[] = [];
       for (const rawEntry of treePayload.tree) {
+        budget?.check();
         if (!isRecord(rawEntry) || typeof rawEntry.path !== "string" || typeof rawEntry.type !== "string") return err(invalidResponse("tree"));
         if (rawEntry.size !== undefined && (typeof rawEntry.size !== "number" || !Number.isSafeInteger(rawEntry.size) || rawEntry.size < 0)) return err(invalidResponse("tree"));
         const pathResult = validateTreePath(rawEntry.path, pathLimit);
         if (!pathResult.ok) return pathResult;
         treeEntries.push({ path: pathResult.value, type: rawEntry.type, ...(rawEntry.size !== undefined ? { size: rawEntry.size } : {}), ...(typeof rawEntry.sha === "string" ? { sha: rawEntry.sha } : {}) });
       }
+      budget?.check();
 
-      const candidates = filterFiles(treeEntries.filter((entry) => entry.type === "blob").map((item) => ({ path: item.path, type: "file" as const, sizeBytes: item.size ?? 0, isAnalyzable: true })), this.limits);
-      const files: RepositoryFile[] = [];
-      for (const item of candidates) {
-        const itemSize = item.sizeBytes ?? 0;
-        if (itemSize > this.limits.maxContentBytes) return err(contentTooLarge(this.limits.maxContentBytes));
-
-        const contentResponse = await this.fetchImpl(`${base}/contents/${encodeGitHubPath(item.path)}?ref=${encodeURIComponent(branch)}`, { headers, signal });
-        if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
-        const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit);
-        if (!contentResult.ok) return contentResult;
-        const payload = contentResult.value;
-        if (!isRecord(payload) || typeof payload.content !== "string" || payload.encoding !== "base64") return err(invalidContent());
-        const decodedResult = decodeGitHubContent(payload.content, this.limits.maxContentBytes);
-        if (!decodedResult.ok) return decodedResult;
-        files.push({ path: item.path, type: "file", sizeBytes: itemSize || Buffer.byteLength(decodedResult.value, "utf8"), content: decodedResult.value, isAnalyzable: true });
+      const candidateInputs: RepositoryFile[] = [];
+      for (const entry of treeEntries) {
+        budget?.check();
+        if (entry.type === "blob") candidateInputs.push({ path: entry.path, type: "file", sizeBytes: entry.size ?? 0, isAnalyzable: true });
       }
+      budget?.check();
+      const candidates = filterFiles(candidateInputs, this.limits, budget)
+        .sort((a, b) => candidatePriority(a.path) - candidatePriority(b.path) || a.path.localeCompare(b.path));
+      budget?.check();
+      const files: RepositoryFile[] = [];
+      let fetchedBytes = 0;
+      let nextIndex = 0;
+      const worker = async (): Promise<JsonResult<null>> => {
+        while (true) {
+          budget?.check();
+          const index = nextIndex++;
+          const item = candidates[index];
+          if (!item) return ok(null);
+          const itemSize = item.sizeBytes ?? 0;
+          if (itemSize > this.limits.maxContentBytes) continue;
+          budget?.check();
+          const contentResponse = await this.fetchImpl(`${base}/contents/${encodeGitHubPath(item.path)}?ref=${encodeURIComponent(branch)}`, { headers, signal });
+          if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
+          const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
+          if (!contentResult.ok) return contentResult;
+          const payload = contentResult.value;
+          if (!isRecord(payload) || typeof payload.content !== "string" || payload.encoding !== "base64") return err(invalidContent());
+          const decodedResult = decodeGitHubContent(payload.content, this.limits.maxContentBytes);
+          if (!decodedResult.ok) {
+            if (decodedResult.error.code === "GITHUB_CONTENT_TOO_LARGE") continue;
+            return decodedResult;
+          }
+          const content = decodedResult.value;
+          const actualBytes = Buffer.byteLength(content, "utf8");
+          if (fetchedBytes + actualBytes > this.limits.maxTotalBytes) continue;
+          fetchedBytes += actualBytes;
+          files.push({ path: item.path, type: "file", sizeBytes: itemSize || actualBytes, content, isAnalyzable: true });
+        }
+      };
+      const workers = Array.from({ length: Math.min(maxConcurrentRequests(this.limits), candidates.length) }, () => worker());
+      const results = await Promise.all(workers);
+      const failed = results.find((result) => !result.ok);
+      if (failed && !failed.ok) return failed;
+      files.sort((a, b) => a.path.localeCompare(b.path));
 
       const id = typeof metadata.id === "number" || typeof metadata.id === "string" ? String(metadata.id) : `${reference.owner}/${reference.name}`;
       const repository = {
@@ -254,7 +335,8 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         fileCount: files.length,
       };
       return ok({ repository, files });
-    } catch {
+    } catch (error) {
+      if (error instanceof AppError) return err(error);
       if (signal?.aborted) return err(new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true }));
       return err(new AppError({ code: "REPOSITORY_INACCESSIBLE", message: "GitHub request failed.", retryable: true }));
     }

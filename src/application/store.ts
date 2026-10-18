@@ -1,6 +1,7 @@
 import type { AnalysisJob } from "@/domain/analysis";
 import type { Diagram } from "@/domain/diagram";
 import { DEFAULT_STORE_LIMITS } from "@/shared/limits";
+import { redactPathValues } from "@/shared/redaction";
 
 export interface InMemoryAnalysisStoreOptions {
   maxAnalyses?: number;
@@ -62,7 +63,7 @@ export class InMemoryAnalysisStore implements AnalysisStore {
   public save(job: AnalysisJob): void {
     this.purgeExpired();
     this.touch(job.id);
-    this.jobs.set(job.id, structuredClone(job));
+    this.jobs.set(job.id, structuredClone(redactPathValues(job)));
   }
 
   public update(job: AnalysisJob): void {
@@ -79,8 +80,9 @@ export class InMemoryAnalysisStore implements AnalysisStore {
   public saveDiagram(diagram: Diagram): void {
     this.purgeExpired();
     this.touch(diagram.analysisId);
-    if (!this.generatedDiagrams.has(diagram.id)) this.generatedDiagrams.set(diagram.id, structuredClone(diagram));
-    this.diagrams.set(diagram.id, structuredClone(diagram));
+    const safeDiagram = redactPathValues(diagram);
+    if (!this.generatedDiagrams.has(diagram.id)) this.generatedDiagrams.set(diagram.id, structuredClone(safeDiagram));
+    this.diagrams.set(diagram.id, structuredClone(safeDiagram));
   }
 
   public getDiagram(id: string): Diagram | undefined {

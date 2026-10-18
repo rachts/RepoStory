@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { POST as analyzePost } from "@/app/api/analyze/route";
-import { redactSecrets } from "@/shared/redaction";
+import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
+import { evidenceFor } from "@/analysis/evidence";
 import { filterFiles } from "@/analysis/filter-files";
 import { toMermaid } from "@/analysis/exports";
 import type { Diagram } from "@/domain/diagram";
@@ -18,6 +19,38 @@ describe("security and API boundaries", () => {
     expect(redacted).not.toContain("super-secret");
     expect(redacted).not.toContain("user:password@example.com");
     expect(redacted).not.toContain("BEGIN PRIVATE KEY");
+  });
+
+  it("redacts token-like path segments while preserving separators, ordinary names, and env examples", () => {
+    expect(redactPath("sk-proj-example-secret/src/index.ts")).toBe("[REDACTED_OPENAI_KEY]/src/index.ts");
+    expect(redactPath("src/ghp_example_secret/index.ts")).toBe("src/[REDACTED_GITHUB_TOKEN]/index.ts");
+    expect(redactPath("src/xoxb-example-secret/config.ts")).toBe("src/[REDACTED_SLACK_TOKEN]/config.ts");
+    expect(redactPath("src/app/api/projects/route.ts")).toBe("src/app/api/projects/route.ts");
+    expect(redactPath(".env.example")).toBe(".env.example");
+    expect(redactPath(".env.sample")).toBe(".env.sample");
+    expect(redactPath(".env.template")).toBe(".env.template");
+    expect(redactPath("src/api-key-prod-9fK2mP7qX4zN8vR1/index.ts")).toBe("src/[REDACTED_PATH_SEGMENT]/index.ts");
+    expect(redactPath("src/4fB9kL2mQ8xN1pR7vT3yZ6wC9dH5/index.ts")).toBe("src/[REDACTED_PATH_SEGMENT]/index.ts");
+    expect(redactPath("src/components/database/authentication/api/index.ts")).toBe("src/components/database/authentication/api/index.ts");
+    expect(redactPath("src/feature-2026-release-notes-for-project/index.ts")).toBe("src/feature-2026-release-notes-for-project/index.ts");
+  });
+
+  it("redacts path fields in nested outward payloads without changing ordinary values", () => {
+    const payload = redactPathValues({
+      route: { filePath: "src/ghp_example_secret/index.ts", routePath: "/api/projects" },
+      diagram: { technicalLabel: "src/xoxb-example-secret/config.ts", description: "ordinary description" },
+      ordinary: "src/app/api/projects/route.ts",
+    });
+    expect(payload.route.filePath).toBe("src/[REDACTED_GITHUB_TOKEN]/index.ts");
+    expect(payload.route.routePath).toBe("/api/projects");
+    expect(payload.diagram.technicalLabel).toBe("src/[REDACTED_SLACK_TOKEN]/config.ts");
+    expect(payload.diagram.description).toBe("ordinary description");
+    expect(payload.ordinary).toBe("src/app/api/projects/route.ts");
+  });
+
+  it("redacts evidence paths at the analysis source boundary", () => {
+    const evidence = evidenceFor({ path: "src/ghp_example_secret/index.ts", type: "file", sizeBytes: 1, content: "export const value = 1;", isAnalyzable: true }, "finds the entry point");
+    expect(evidence.filePath).toBe("src/[REDACTED_GITHUB_TOKEN]/index.ts");
   });
 
   it("excludes secret-bearing and generated paths", () => {

@@ -3,6 +3,7 @@ import { analysisStore } from "@/composition/container";
 import { toMermaid } from "@/analysis/exports";
 import { z } from "zod";
 import { applyDiagramPatch } from "@/application/diagram-edits";
+import { redactPathValues } from "@/shared/redaction";
 
 interface RouteContext {
   params: Promise<{ diagramId: string }>;
@@ -22,7 +23,8 @@ export async function GET(_request: Request, context: RouteContext): Promise<Nex
   const { diagramId } = await context.params;
   const diagram = analysisStore.getDiagram(diagramId);
   if (!diagram) return NextResponse.json({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
-  return NextResponse.json({ diagram, mermaid: toMermaid(diagram) });
+  const safeDiagram = redactPathValues(diagram);
+  return NextResponse.json({ diagram: safeDiagram, mermaid: toMermaid(safeDiagram) });
 }
 
 export async function PATCH(request: Request, context: RouteContext): Promise<NextResponse> {
@@ -35,7 +37,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Ne
     const edgeIds = new Set(diagram.edges.map((edge) => edge.id));
     if ((patch.nodeUpdates ?? []).some((update) => !nodeIds.has(update.nodeId))) throw new Error("UNKNOWN_NODE_ID");
     if ((patch.edgeUpdates ?? []).some((update) => !edgeIds.has(update.edgeId))) throw new Error("UNKNOWN_EDGE_ID");
-    const updated = applyDiagramPatch(diagram, patch);
+    const updated = redactPathValues(applyDiagramPatch(diagram, patch));
     analysisStore.saveDiagram(updated);
     return NextResponse.json({ diagram: updated });
   } catch (error) {

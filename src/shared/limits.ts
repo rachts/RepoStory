@@ -6,6 +6,9 @@ export const DEFAULT_LIMITS = {
   maxResponseBytes: 5_000_000,
   maxPathLength: 4_096,
   maxEvidenceExcerpt: 1_000,
+  maxTreeEntries: 10_000,
+  maxImportCandidates: 256,
+  maxConcurrentContentRequests: 6,
   maxAnalysisMs: 30_000,
 } as const;
 export const DEFAULT_STORE_LIMITS = {
@@ -20,6 +23,9 @@ export type AnalysisLimits = {
   maxResponseBytes?: number;
   maxPathLength?: number;
   maxEvidenceExcerpt: number;
+  maxTreeEntries?: number;
+  maxImportCandidates?: number;
+  maxConcurrentContentRequests?: number;
   maxAnalysisMs: number;
 };
 

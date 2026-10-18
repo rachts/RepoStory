@@ -1,11 +1,11 @@
 import type { Diagram, DiagramPatch } from "@/domain/diagram";
-import { redactSecrets } from "@/shared/redaction";
+import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
 import { truncate } from "@/shared/text";
 
 const MAX_EDIT_TEXT = 5000;
 
 function clean(value: string): string {
-  return truncate(redactSecrets(value.replace(/[\u0000-\u001f\u007f]/g, " ").trim()), MAX_EDIT_TEXT);
+  return truncate(redactPath(redactSecrets(value.replace(/[\u0000-\u001f\u007f]/g, " ").trim())), MAX_EDIT_TEXT);
 }
 
 export function applyDiagramPatch(diagram: Diagram, patch: DiagramPatch): Diagram {
@@ -32,7 +32,7 @@ export function applyDiagramPatch(diagram: Diagram, patch: DiagramPatch): Diagra
       ...(update.visible !== undefined ? { visible: update.visible } : {}),
     };
   });
-  return {
+  return redactPathValues({
     ...diagram,
     ...(patch.title !== undefined ? { title: clean(patch.title) } : {}),
     ...(patch.description !== undefined ? { description: clean(patch.description) } : {}),
@@ -41,5 +41,5 @@ export function applyDiagramPatch(diagram: Diagram, patch: DiagramPatch): Diagra
     nodes,
     edges,
     updatedAt: new Date().toISOString(),
-  };
+  });
 }

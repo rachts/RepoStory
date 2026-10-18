@@ -5,6 +5,7 @@ import { analyzeModuleRelationships } from "@/analysis/module-relationships";
 import { analyzeDatabaseEvidence } from "@/analysis/database";
 import { analyzeExternalIntegrations } from "@/analysis/integrations";
 import { analyzeAuthentication } from "@/analysis/authentication";
+import { analyzeDirectories } from "@/analysis/directory";
 import { analyzePhase3 } from "@/analysis/phase3";
 import { apiRequestFlowDiagram, authenticationFlowDiagram } from "@/analysis/flow-diagrams";
 import nextApiFixture from "../../fixtures/repositories/next-api/repository.json";
@@ -66,6 +67,25 @@ describe("RepoStory Phase 3 deterministic analysis", () => {
     expect(findings.map((finding) => finding.service)).toEqual(expect.arrayContaining(["External HTTP API", "OpenAI", "Sentry", "SendGrid", "Stripe"]));
     expect(findings).toHaveLength(5);
     expect(findings.every((finding) => finding.evidence.length > 0 && finding.plainEnglishLabel.length > 0)).toBe(true);
+  });
+
+  it("redacts token-like file paths while preserving an ordinary API route path", () => {
+    const tokenFiles: RepositoryFile[] = [
+      { path: "sk-proj-example-secret/src/index.ts", type: "file", sizeBytes: 20, content: "export const index = 1;", isAnalyzable: true },
+      { path: "src/ghp_example_secret/index.ts", type: "file", sizeBytes: 20, content: "export const index = 1;", isAnalyzable: true },
+      { path: "src/xoxb-example-secret/config.ts", type: "file", sizeBytes: 120, content: 'import { WebClient } from "@slack/web-api";\nconst client = new WebClient();', isAnalyzable: true },
+      { path: "src/app/api/projects/route.ts", type: "file", sizeBytes: 80, content: "export async function GET() { return new Response(\"ok\"); }", isAnalyzable: true },
+    ];
+
+    const directories = analyzeDirectories(tokenFiles);
+    const routes = analyzeApiRoutes(tokenFiles);
+    const integrations = analyzeExternalIntegrations(tokenFiles);
+
+    expect(directories.find((finding) => finding.technicalLabel === "[REDACTED_OPENAI_KEY]")?.technicalLabel).toBe("[REDACTED_OPENAI_KEY]");
+    expect(routes).toEqual([expect.objectContaining({ routePath: "/api/projects", filePath: "src/app/api/projects/route.ts", handler: "src/app/api/projects/route.ts" })]);
+    expect(JSON.stringify(integrations)).not.toContain("xoxb-example-secret");
+    expect(JSON.stringify([...directories, ...routes, ...integrations])).not.toContain("sk-proj-example-secret");
+    expect(JSON.stringify([...directories, ...routes, ...integrations])).not.toContain("ghp_example_secret");
   });
 
   it("detects authentication providers, JWT evidence, and middleware", () => {

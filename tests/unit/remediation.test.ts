@@ -1,20 +1,30 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { analyzeAuthentication } from "@/analysis/authentication";
 import { analyzeDatabaseEvidence } from "@/analysis/database";
 import { analyzeExternalIntegrations } from "@/analysis/integrations";
 import { analyzeApiRoutes } from "@/analysis/routes";
 import { toMarkdown, toMermaid } from "@/analysis/exports";
+import { apiRequestFlowDiagram } from "@/analysis/flow-diagrams";
+import { importCandidates } from "@/analysis/module-relationships";
+import { sourceFiles } from "@/analysis/static-utils";
 import { runAnalysis } from "@/application/pipeline";
 import { InMemoryAnalysisStore } from "@/application/store";
+import { GET as getAnalysis } from "@/app/api/analysis/[analysisId]/route";
+import { GET as getAnalysisDiagrams } from "@/app/api/analysis/[analysisId]/diagrams/route";
+import { GET as getDiagram } from "@/app/api/diagrams/[diagramId]/route";
+import { analysisStore } from "@/composition/container";
 import type { AnalysisJob } from "@/domain/analysis";
 import type { Diagram } from "@/domain/diagram";
 import type { RepositoryFile } from "@/domain/repository";
+import { AppError } from "@/domain/errors";
 import { FixtureRepositoryProvider } from "@/infrastructure/providers/fixture-provider";
 import { GitHubPublicRepositoryProvider } from "@/infrastructure/providers/github-provider";
 import { parseGitHubUrl } from "@/infrastructure/providers/github-url";
 import { filterFiles } from "@/analysis/filter-files";
 import { isSecretBearingPath, redactSecrets } from "@/shared/redaction";
+import { redactPath } from "@/shared/redaction";
 import { ok } from "@/shared/result";
+import { DEFAULT_LIMITS, type AnalysisBudget } from "@/shared/limits";
 
 const limits = {
   maxFiles: 10,
@@ -61,6 +71,17 @@ describe("Phase 3 remediation reproductions", () => {
     expect(redacted).not.toContain("sk_live_fake");
     expect(redacted).not.toContain("sk-proj-fake");
     expect(redacted).not.toContain("fake-bearer-token");
+  });
+
+  it("sorts before applying the file-count cap so ignored or later files do not starve analysis", () => {
+    const selected = filterFiles([
+      sourceFile("z.ts", "export const z = 1;"),
+      sourceFile("node_modules/ignored.ts", "export const ignored = 1;"),
+      sourceFile("a.ts", "export const a = 1;"),
+      sourceFile("b.ts", "export const b = 1;"),
+    ], { ...limits, maxFiles: 2 });
+
+    expect(selected.map((file) => file.path)).toEqual(["a.ts", "b.ts"]);
   });
 
   it("redacts literal special-character values while keeping narrow dynamic references", () => {
@@ -142,6 +163,27 @@ describe("Phase 3 remediation reproductions", () => {
     expect(findings).toEqual([]);
   });
 
+  it.each([
+    ["import { router } from unrelated package", `import { router } from "unrelated-package";\nrouter.get("/not-express", handler);`],
+    ["require unrelated router", `const apiRouter = require("unrelated-package");\napiRouter.use("/not-express", handler);`],
+    ["bare Router call", `const router = Router();\nrouter.get("/not-express", handler);`],
+  ])("rejects Express-looking code without proven Express provenance: %s", (_label, content) => {
+    expect(analyzeApiRoutes([sourceFile("src/server.ts", content)])).toEqual([]);
+  });
+
+  it("accepts Express routers proven by imports and require provenance", () => {
+    const findings = analyzeApiRoutes([sourceFile("src/server.ts", [
+      'import express, { Router as ImportedRouter } from "express";',
+      "const app = express();",
+      "const router = ImportedRouter();",
+      'app.use("/api", router);',
+      'router.get("/health", handler);',
+      'const expressRouter = require("express").Router();',
+      'expressRouter.post("/users", handler);',
+    ].join("\n"))]);
+    expect(findings.map((finding) => `${finding.methods[0]} ${finding.routePath}`)).toEqual(expect.arrayContaining(["GET /api/health", "POST /users"]));
+  });
+
   it("sanitizes secret-looking route paths in route findings and pipeline diagrams", async () => {
     const secret = "sk-proj-route-secret";
     const provider = { getSnapshot: async () => ok({
@@ -163,6 +205,75 @@ describe("Phase 3 remediation reproductions", () => {
       expect(diagram).toBeDefined();
       expect(toMermaid(diagram!)).not.toContain(secret);
       expect(toMarkdown(diagram!)).not.toContain(secret);
+    }
+  });
+
+  it("keeps secret-looking route paths out of the analysis API response", async () => {
+    const secret = "sk-proj-api-response-secret";
+    const provider = { getSnapshot: async () => ok({
+      repository: { id: "api-route-secret-repo", owner: "fixture", name: "api-route-secret-repo", url: "https://github.com/fixture/api-route-secret-repo", defaultBranch: "main", selectedBranch: "main", description: "description sk-proj-description-secret", sizeBytes: 200, fileCount: 1 },
+      files: [sourceFile("src/server.ts", `import express from "express";\nconst app = express();\napp.get("/api/${secret}", () => null);`)],
+    }) };
+    const result = await runAnalysis({ owner: "fixture", name: "api-route-secret-repo", url: "https://github.com/fixture/api-route-secret-repo" }, provider, analysisStore);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const response = await getAnalysis(new Request("http://localhost/api/analysis"), { params: Promise.resolve({ analysisId: result.value.id }) });
+    const payload = await response.json();
+    expect(JSON.stringify(payload)).not.toContain(secret);
+    expect(JSON.stringify(payload)).not.toContain("sk-proj-description-secret");
+  });
+
+  it("keeps token-like path components out of findings, stored diagrams, APIs, and exports", async () => {
+    const rawPaths = [
+      "sk-proj-example-secret/src/index.ts",
+      "src/ghp_example_secret/index.ts",
+      "src/xoxb-example-secret/config.ts",
+    ];
+    expect(redactPath(rawPaths[0]!)).toBe("[REDACTED_OPENAI_KEY]/src/index.ts");
+    expect(redactPath(rawPaths[1]!)).toBe("src/[REDACTED_GITHUB_TOKEN]/index.ts");
+    expect(redactPath(rawPaths[2]!)).toBe("src/[REDACTED_SLACK_TOKEN]/config.ts");
+    const isolatedStore = new InMemoryAnalysisStore();
+    isolatedStore.saveDiagram({ ...diagramWithUntrustedText(), id: "path-boundary-diagram", analysisId: "path-boundary-analysis", nodes: [{ ...diagramWithUntrustedText().nodes[0]!, technicalLabel: rawPaths[0]! }] });
+    expect(JSON.stringify(isolatedStore.getDiagram("path-boundary-diagram"))).not.toContain(rawPaths[0]!);
+
+    const provider = {
+      getSnapshot: async () => ok({
+        repository: { id: "path-boundary-repo", owner: "fixture", name: "path-boundary-repo", url: "https://github.com/fixture/path-boundary-repo", defaultBranch: "main", selectedBranch: "main", sizeBytes: 500, fileCount: 4 },
+        files: [
+          sourceFile(rawPaths[0]!, "export const index = 1;"),
+          sourceFile(rawPaths[1]!, "export const index = 2;"),
+          sourceFile(rawPaths[2]!, 'import { WebClient } from "@slack/web-api";\nconst client = new WebClient();'),
+          sourceFile("src/app/api/projects/route.ts", "export async function GET() { return new Response(\"ok\"); }"),
+        ],
+      }),
+    };
+    const result = await runAnalysis({ owner: "fixture", name: "path-boundary-repo", url: "https://github.com/fixture/path-boundary-repo" }, provider, analysisStore);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const rawJob = JSON.stringify(result.value);
+    expect(rawPaths.every((path) => !rawJob.includes(path))).toBe(true);
+    expect(rawJob).toContain("src/app/api/projects/route.ts");
+
+    const analysisResponse = await getAnalysis(new Request("http://localhost/api/analysis"), { params: Promise.resolve({ analysisId: result.value.id }) });
+    const analysisPayload = await analysisResponse.json();
+    const diagramsResponse = await getAnalysisDiagrams(new Request("http://localhost/api/analysis/diagrams"), { params: Promise.resolve({ analysisId: result.value.id }) });
+    const diagramsPayload = await diagramsResponse.json();
+    expect(analysisResponse.status).toBe(200);
+    expect(diagramsResponse.status).toBe(200);
+    expect(rawPaths.every((path) => !JSON.stringify(analysisPayload).includes(path))).toBe(true);
+    expect(rawPaths.every((path) => !JSON.stringify(diagramsPayload).includes(path))).toBe(true);
+
+    for (const diagramId of result.value.diagramIds) {
+      const stored = analysisStore.getDiagram(diagramId);
+      expect(stored).toBeDefined();
+      expect(rawPaths.every((path) => !JSON.stringify(stored).includes(path))).toBe(true);
+      const diagramResponse = await getDiagram(new Request(`http://localhost/api/diagrams/${diagramId}`), { params: Promise.resolve({ diagramId }) });
+      const diagramPayload = await diagramResponse.json();
+      expect(diagramResponse.status).toBe(200);
+      expect(rawPaths.every((path) => !JSON.stringify(diagramPayload).includes(path))).toBe(true);
+      expect(rawPaths.every((path) => !toMermaid(stored!).includes(path))).toBe(true);
+      expect(rawPaths.every((path) => !toMarkdown(stored!).includes(path))).toBe(true);
     }
   });
 
@@ -216,12 +327,173 @@ describe("Phase 3 remediation reproductions", () => {
 
   it("returns a structured timeout when the full pipeline deadline is exceeded", async () => {
     let clock = 0;
-    const result = await runAnalysis({ owner: "fixture", name: "small-react", url: "https://github.com/fixture/small-react" }, new FixtureRepositoryProvider(), new InMemoryAnalysisStore(), {
+    const store = new InMemoryAnalysisStore();
+    const save = vi.spyOn(store, "save");
+    const result = await runAnalysis({ owner: "fixture", name: "small-react", url: "https://github.com/fixture/small-react" }, new FixtureRepositoryProvider(), store, {
       now: () => { clock += 100; return clock; },
       limits: { ...limits, maxAnalysisMs: 50 },
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error.code).toBe("ANALYSIS_TIMEOUT");
+    expect(save.mock.calls.map(([job]) => job.status)).not.toContain("completed");
+    expect(save.mock.calls.at(-1)?.[0].status).toBe("failed");
+  });
+
+  it("expires during import discovery before candidate processing completes", () => {
+    const content = Array.from({ length: 100 }, (_, index) => `import module${index} from \"./module-${index}\";`).join("\n");
+    let checks = 0;
+    const budget: AnalysisBudget = {
+      check: () => {
+        checks += 1;
+        if (checks > 2) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });
+      },
+    };
+
+    expect(() => importCandidates(content, budget)).toThrowError(expect.objectContaining({ code: "ANALYSIS_TIMEOUT" }));
+    expect(checks).toBeGreaterThan(2);
+  });
+
+  it("rejects an oversized GitHub tree before collecting entries for sorting", async () => {
+    const calls: string[] = [];
+    const provider = new GitHubPublicRepositoryProvider({
+      limits: { ...limits, maxTreeEntries: 2 },
+      fetchImpl: async (input) => {
+        const url = String(input);
+        calls.push(url);
+        if (url.endsWith("/repos/acme/widget")) return new Response(JSON.stringify({ id: 1, default_branch: "main", size: 1, html_url: "https://github.com/acme/widget" }));
+        return new Response(JSON.stringify({ tree: [
+          { path: "src/b.ts", type: "blob", size: 1 },
+          { path: "src/a.ts", type: "blob", size: 1 },
+          { path: "src/c.ts", type: "blob", size: 1 },
+        ] }));
+      },
+    });
+
+    const result = await provider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("REPOSITORY_TOO_LARGE");
+    expect(calls.some((url) => url.includes("/contents/"))).toBe(false);
+  });
+
+  it("caps source-file sorting and checks the budget around the sort", () => {
+    const files = Array.from({ length: DEFAULT_LIMITS.maxFiles + 25 }, (_, index) => sourceFile(`src/${String(DEFAULT_LIMITS.maxFiles + 25 - index).padStart(5, "0")}.ts`, ""));
+    let checks = 0;
+    const budget: AnalysisBudget = { check: () => { checks += 1; } };
+    const result = sourceFiles(files, budget);
+
+    expect(result).toHaveLength(DEFAULT_LIMITS.maxFiles);
+    expect(result[0]?.path).toBe("src/00001.ts");
+    expect(result.at(-1)?.path).toBe("src/02000.ts");
+    expect(result.map((file) => file.path)).toEqual([...result].sort((left, right) => left.path.localeCompare(right.path)).map((file) => file.path));
+    expect(checks).toBeGreaterThan(DEFAULT_LIMITS.maxFiles + 1);
+  });
+
+  it("returns a structured timeout while assembling streamed GitHub response chunks", async () => {
+    let streaming = false;
+    let streamedChecks = 0;
+    const budget: AnalysisBudget = {
+      check: () => {
+        if (!streaming) return;
+        streamedChecks += 1;
+        if (streamedChecks > 4) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });
+      },
+    };
+    const provider = new GitHubPublicRepositoryProvider({
+      limits,
+      fetchImpl: async (input) => {
+        const url = String(input);
+        if (url.endsWith("/repos/acme/widget")) return new Response(JSON.stringify({ id: 1, default_branch: "main", size: 1, html_url: "https://github.com/acme/widget" }));
+        streaming = true;
+        const encoder = new TextEncoder();
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('{"tree":'));
+            controller.enqueue(encoder.encode("[]}"));
+            controller.close();
+          },
+        }));
+      },
+    });
+
+    const result = await provider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" }, undefined, budget);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("ANALYSIS_TIMEOUT");
+    expect(streamedChecks).toBeGreaterThan(4);
+  });
+
+  it("does not save a completed job when a budget expires after partial diagram work", async () => {
+    let expired = false;
+    const budget: AnalysisBudget = {
+      check: () => {
+        if (expired) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });
+      },
+    };
+    const store = new InMemoryAnalysisStore();
+    const save = vi.spyOn(store, "save");
+    const persistDiagram = store.saveDiagram.bind(store);
+    const saveDiagram = vi.spyOn(store, "saveDiagram").mockImplementation((diagram) => {
+      persistDiagram(diagram);
+      expired = true;
+    });
+    const provider = new FixtureRepositoryProvider();
+    const result = await runAnalysis({ owner: "fixture", name: "small-react", url: "https://github.com/fixture/small-react" }, provider, store, {
+      budget,
+      limits: { ...limits, maxAnalysisMs: 60_000 },
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("ANALYSIS_TIMEOUT");
+    expect(saveDiagram).toHaveBeenCalled();
+    expect(save.mock.calls.map(([job]) => job.status)).not.toContain("completed");
+  });
+
+  it("checks the analysis budget during flow-node generation", () => {
+    let checks = 0;
+    const budget = {
+      check: () => {
+        checks += 1;
+        if (checks > 2) throw new Error("budget exhausted");
+      },
+    };
+    const manyRoutes = Array.from({ length: 20 }, (_, index) => ({
+      id: `route-${index}`,
+      kind: "api-route" as const,
+      technicalLabel: `GET /route-${index}`,
+      plainEnglishLabel: `GET /route-${index}`,
+      explanation: "Route evidence",
+      confidence: "high" as const,
+      evidence: [{ id: `evidence-${index}`, filePath: `src/routes/${index}.ts`, reason: "Route evidence" }],
+      routePath: `/route-${index}`,
+      path: `/route-${index}`,
+      route: `/route-${index}`,
+      methods: ["GET" as const],
+      httpMethods: ["GET" as const],
+      framework: "express" as const,
+      filePath: `src/routes/${index}.ts`,
+    }));
+    expect(() => {
+      apiRequestFlowDiagram("budget-analysis", { id: "repo", owner: "fixture", name: "budget", url: "https://github.com/fixture/budget", defaultBranch: "main", selectedBranch: "main", sizeBytes: 0, fileCount: 20 }, manyRoutes, [], budget);
+    }).toThrow("budget exhausted");
+    expect(checks).toBeGreaterThan(2);
+  });
+
+  it("returns a structured timeout when the GitHub provider loop budget expires", async () => {
+    let checks = 0;
+    const budget = {
+      check: () => {
+        checks += 1;
+        if (checks > 3) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });
+      },
+    };
+    const provider = new GitHubPublicRepositoryProvider({ limits, fetchImpl: async (input) => {
+      const url = String(input);
+      if (url.endsWith("/repos/acme/widget")) return new Response(JSON.stringify({ id: 1, default_branch: "main", size: 1, html_url: "https://github.com/acme/widget" }));
+      return new Response(JSON.stringify({ tree: Array.from({ length: 20 }, (_, index) => ({ path: `src/${index}.ts`, type: "blob", size: 1 })) }));
+    } });
+    const result = await provider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" }, undefined, budget);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error.code).toBe("ANALYSIS_TIMEOUT");
+    expect(checks).toBeGreaterThan(3);
   });
 
   it("rejects unsafe tree paths before fetching content", async () => {
@@ -264,7 +536,8 @@ describe("Phase 3 remediation reproductions", () => {
       return new Response(JSON.stringify({ content: "c2VjcmV0", encoding: "base64" }));
     } });
     const oversized = await oversizedProvider.getSnapshot({ owner: "acme", name: "widget", url: "https://github.com/acme/widget" });
-    expect(oversized.ok).toBe(false);
+    expect(oversized.ok).toBe(true);
+    if (oversized.ok) expect(oversized.value.files).toHaveLength(0);
   });
 
   it("rejects oversized tree responses and invalid base64 content", async () => {

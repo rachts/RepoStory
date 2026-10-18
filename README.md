@@ -433,6 +433,9 @@ authentication system.
   | Maximum GitHub response size | `5,000,000` bytes |
   | Maximum repository path length | `4,096` bytes |
   | Maximum evidence excerpt | `1,000` characters |
+  | Maximum GitHub tree entries processed before sorting and content retrieval (`maxTreeEntries`) | `10,000` |
+  | Maximum import candidates analyzed per source file during static module discovery (`maxImportCandidates`) | `256` |
+  | Maximum concurrent GitHub content requests | `6` |
   | Maximum analysis time | `30,000` ms |
 
 - **Tree and encoding checks.** Truncated Git trees, malformed JSON, invalid

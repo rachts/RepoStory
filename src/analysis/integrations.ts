@@ -4,6 +4,7 @@ import type { RepositoryFile } from "@/domain/repository";
 import type { AnalysisBudget } from "@/shared/limits";
 import { evidenceForPattern, fileContent, packageDependencyEvidence, packageNames, safePath, sourceFiles, uniqueEvidence, withoutStandaloneComments } from "@/analysis/static-utils";
 import { stableId } from "@/shared/ids";
+import { redactPath, redactSecrets } from "@/shared/redaction";
 
 interface IntegrationRule {
   key: string;
@@ -36,20 +37,35 @@ const integrationRules: IntegrationRule[] = [
   { key: "hubspot", service: "HubSpot", plain: "CRM operations through HubSpot", packages: ["@hubspot/api-client"], imports: /(?:from|require\s*\()\s*["']@hubspot\/api-client["']/i, initialization: /\b(?:hubspot|Client)\./i, initializationRequiresContext: true },
 ];
 
-function matchingPackages(dependencies: Set<string>, rule: IntegrationRule): string[] {
-  return [...dependencies].filter((name) => rule.packages.includes(name) || rule.packagePrefixes?.some((prefix) => name.startsWith(prefix))).sort();
+function matchingPackages(dependencies: Set<string>, rule: IntegrationRule, budget?: AnalysisBudget): string[] {
+  const matches: string[] = [];
+  for (const name of dependencies) {
+    budget?.check();
+    let matchesRule = rule.packages.includes(name);
+    for (const prefix of rule.packagePrefixes ?? []) {
+      budget?.check();
+      if (name.startsWith(prefix)) {
+        matchesRule = true;
+        break;
+      }
+    }
+    if (matchesRule) matches.push(name);
+  }
+  matches.sort((left, right) => { budget?.check(); return left.localeCompare(right); });
+  budget?.check();
+  return matches;
 }
 
-function integrationFinding(rule: IntegrationRule, evidence: EvidenceReference[], evidenceType: ExternalIntegrationFinding["evidenceType"], confidence: ExternalIntegrationFinding["confidence"], detail: string, packageName?: string): ExternalIntegrationFinding {
+function integrationFinding(rule: IntegrationRule, evidence: EvidenceReference[], evidenceType: ExternalIntegrationFinding["evidenceType"], confidence: ExternalIntegrationFinding["confidence"], detail: string, packageName?: string, budget?: AnalysisBudget): ExternalIntegrationFinding {
   return {
     id: stableId("integration", rule.key),
     kind: "external-service",
     technicalLabel: rule.service,
     plainEnglishLabel: rule.plain,
-    explanation: `${rule.service} evidence was found ${detail}. The detector reports only static imports, dependencies, or client initialization patterns.`,
-    technicalDetail: packageName ? `package=${packageName}` : `service=${rule.key}`,
+    explanation: redactSecrets(`${rule.service} evidence was found ${detail}. The detector reports only static imports, dependencies, or client initialization patterns.`),
+    technicalDetail: redactSecrets(packageName ? `package=${packageName}` : `service=${rule.key}`),
     confidence,
-    evidence: uniqueEvidence(evidence),
+    evidence: uniqueEvidence(evidence, budget),
     service: rule.service,
     packageName,
     evidenceType,
@@ -57,14 +73,25 @@ function integrationFinding(rule: IntegrationRule, evidence: EvidenceReference[]
 }
 
 export function analyzeExternalIntegrations(files: RepositoryFile[], budget?: AnalysisBudget): ExternalIntegrationFinding[] {
-  const analyzable = sourceFiles(files);
-  const packageFile = analyzable.find((file) => file.path.toLowerCase() === "package.json");
-  const dependencies = new Set(packageNames(packageFile));
+  const analyzable = sourceFiles(files, budget);
+  let packageFile: RepositoryFile | undefined;
+  for (const file of analyzable) {
+    budget?.check();
+    if (file.path.toLowerCase() === "package.json") {
+      packageFile = file;
+      break;
+    }
+  }
+  const dependencies = new Set(packageNames(packageFile, budget));
   const findings: ExternalIntegrationFinding[] = [];
   for (const rule of integrationRules) {
     budget?.check();
-    const packageMatches = matchingPackages(dependencies, rule);
-    const evidence: EvidenceReference[] = packageMatches.flatMap((name) => packageDependencyEvidence(packageFile, name, `${rule.service} dependency ${name} is declared`));
+    const packageMatches = matchingPackages(dependencies, rule, budget);
+    const evidence: EvidenceReference[] = [];
+    for (const name of packageMatches) {
+      budget?.check();
+      evidence.push(...packageDependencyEvidence(packageFile, name, `${rule.service} dependency ${name} is declared`));
+    }
     let sourceEvidenceType: ExternalIntegrationFinding["evidenceType"] | undefined;
     const sourceFilesMatched: RepositoryFile[] = [];
     for (const file of analyzable) {
@@ -81,8 +108,8 @@ export function analyzeExternalIntegrations(files: RepositoryFile[], budget?: An
     if (!sourceFilesMatched.length) continue;
     const evidenceType = packageMatches.length ? "dependency" : sourceEvidenceType ?? "import";
     const confidence = packageMatches.length ? "high" : "medium";
-    const detail = packageMatches.length ? `through declared package${packageMatches.length > 1 ? "s" : ""} ${packageMatches.join(", ")}` : `in ${sourceFilesMatched.map((file) => safePath(file.path)).join(", ")}`;
-    findings.push(integrationFinding(rule, evidence, evidenceType, confidence, detail, packageMatches[0]));
+    const detail = packageMatches.length ? `through declared package${packageMatches.length > 1 ? "s" : ""} ${packageMatches.join(", ")}` : `in ${sourceFilesMatched.map((file) => redactPath(safePath(file.path))).join(", ")}`;
+    findings.push(integrationFinding(rule, evidence, evidenceType, confidence, detail, packageMatches[0], budget));
   }
 
   const httpEvidence: EvidenceReference[] = [];
@@ -97,9 +124,11 @@ export function analyzeExternalIntegrations(files: RepositoryFile[], budget?: An
     httpEvidence.push(evidenceForPattern(file, axiosMatch ? "initializes a generic HTTP client" : "calls an external HTTP URL", axiosMatch ? /\baxios(?:\.create)?\s*\(/i : /\bfetch\s*\(\s*["'`]https?:\/\//i));
   }
   if (httpEvidence.length) {
-    findings.push(integrationFinding({ key: "http-client", service: "External HTTP API", plain: "Calls to an external HTTP service", packages: [] }, httpEvidence, "http-client", "medium", `in ${httpFiles.map((file) => safePath(file.path)).join(", ")}`));
+    findings.push(integrationFinding({ key: "http-client", service: "External HTTP API", plain: "Calls to an external HTTP service", packages: [] }, httpEvidence, "http-client", "medium", `in ${httpFiles.map((file) => redactPath(safePath(file.path))).join(", ")}`, undefined, budget));
   }
-  return findings.sort((left, right) => left.id.localeCompare(right.id));
+  findings.sort((left, right) => { budget?.check(); return left.id.localeCompare(right.id); });
+  budget?.check();
+  return findings;
 }
 
 export const analyzeIntegrations = analyzeExternalIntegrations;

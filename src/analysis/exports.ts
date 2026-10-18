@@ -20,7 +20,9 @@ function exportableEvidence(evidence: readonly EvidenceReference[]): EvidenceRef
 }
 
 function evidenceMarkdown(evidence: EvidenceReference): string {
-  const excerpt = evidence.excerpt ? truncate(markdownText(evidence.excerpt), MAX_EXPORTED_EVIDENCE_EXCERPT) : "not available";
+  const excerpt = evidence.excerpt
+    ? markdownText(truncate(redactSecrets(evidence.excerpt).replace(/[\r\n\t]+/g, " "), MAX_EXPORTED_EVIDENCE_EXCERPT))
+    : "not available";
   return `  - Evidence: path: ${markdownText(evidence.filePath)}; lines: ${markdownText(lineRange(evidence))}; symbol: ${markdownText(evidence.symbol ?? "not available")}; reason: ${markdownText(evidence.reason)}; excerpt: ${excerpt}`;
 }
 
