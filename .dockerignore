@@ -1,8 +1,11 @@
-node_modules
-.next
-coverage
 .git
-.env*
-!.env.example
+.next
+node_modules
+coverage
 playwright-report
 test-results
+blob-report
+.repo-story-data
+.env*
+!.env.example
+*.log

@@ -163,7 +163,9 @@ export async function runAnalysis(
     store.save(job);
     return ok(job);
   } catch (error) {
-    return fail(error instanceof AppError ? error : new AppError({ code: "ANALYSIS_FAILED", message: "The analysis could not be completed.", retryable: true }));
+    if (error instanceof AppError) return fail(error);
+    console.error("[RepoStory] unexpected analysis pipeline error", error);
+    return fail(new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true }));
   } finally {
     store.finishAnalysis?.(id);
   }
