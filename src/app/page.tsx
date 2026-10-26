@@ -2,8 +2,8 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { parseGitHubUrl } from "@/infrastructure/providers/github-url";
+import { RepoStoryBrand, RepoStoryIcon } from "@/components/RepoStoryBrand";
 
 const exampleRepository = "https://github.com/facebook/react";
 
@@ -38,9 +38,9 @@ export default function Home(): React.JSX.Element {
         const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
         throw new Error(payload?.error?.message ?? "The repository could not be analyzed.");
       }
-      const payload = (await response.json()) as { analysisId?: string };
-      if (!payload.analysisId) throw new Error("The analysis response was incomplete.");
-      router.push(`/analysis/${encodeURIComponent(payload.analysisId)}`);
+       const payload = (await response.json()) as { jobId?: string };
+       if (!payload.jobId) throw new Error("The analysis response was incomplete.");
+       router.push(`/analysis/${encodeURIComponent(payload.jobId)}`);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : "Something went wrong. Try again.");
     } finally {
@@ -51,12 +51,13 @@ export default function Home(): React.JSX.Element {
   return (
     <main className="landing-page">
       <header className="site-header page-width">
-        <Link className="brand" href="/" aria-label="RepoStory home"><span className="brand-mark">R</span> RepoStory</Link>
+        <RepoStoryBrand />
         <span className="header-note"><span className="status-dot" /> Evidence-backed repository stories</span>
       </header>
 
       <section className="hero page-width">
         <div className="hero-copy">
+          <RepoStoryIcon className="hero-brand-icon" alt="RepoStory" />
           <p className="eyebrow"><span className="eyebrow-line" /> Repository intelligence</p>
           <h1>Make your codebase <em>make sense.</em></h1>
           <p className="hero-lede">RepoStory turns a public GitHub repository into a clear, evidence-backed story your whole team can follow.</p>

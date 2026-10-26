@@ -1,4 +1,4 @@
-import type { AnalysisError, AnalysisJob, DiagramAvailability } from "@/domain/analysis";
+import type { AnalysisError, AnalysisResult, AnalysisCoverage, DiagramAvailability } from "@/domain/analysis";
 import type { RepositoryFile, RepositoryProvider, RepositoryReference } from "@/domain/repository";
 import { repositoryStructureDiagram, systemOverviewDiagram } from "@/analysis/diagrams";
 import { analyzeDirectories, analyzeEntryPoints, analyzePhase3, analyzeTechnologies, apiRequestFlowDiagram, authenticationFlowDiagram, generateArchitectureStory } from "@/analysis";
@@ -14,6 +14,9 @@ export interface AnalysisRunOptions {
   limits?: AnalysisLimits;
   now?: () => number;
   budget?: AnalysisBudget;
+  analysisId?: string;
+  signal?: AbortSignal;
+  onProgress?: (progress: { stage: AnalysisResult["stage"]; progress: number; message: string }) => void;
 }
 
 function fileBytes(file: RepositoryFile): number {
@@ -30,17 +33,49 @@ function totalFileBytes(files: readonly RepositoryFile[]): number {
   return total;
 }
 
+function fileSize(file: RepositoryFile): number {
+  if (Number.isSafeInteger(file.sizeBytes) && (file.sizeBytes ?? 0) >= 0) return file.sizeBytes ?? 0;
+  return file.content === undefined ? 0 : new TextEncoder().encode(file.content).byteLength;
+}
+
+function isSupportedPath(path: string): boolean {
+  return /\.(tsx?|jsx?|css|scss|json|md|yml|yaml|toml|sql|prisma|py|go|rs|java|kt|rb|php|swift)$/i.test(path)
+    || /(^|\/)(Dockerfile(?:\..*)?|Makefile|Gemfile|Procfile|Rakefile|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|composer\.json)$/.test(path);
+}
+
+function buildCoverage(discovered: readonly RepositoryFile[], analyzed: readonly RepositoryFile[], limits: AnalysisLimits): AnalysisCoverage {
+  const analyzedPaths = new Set(analyzed.map((file) => file.path));
+  let tooLarge = 0;
+  let unsupported = 0;
+  let limitReached = 0;
+  for (const file of discovered) {
+    if (analyzedPaths.has(file.path)) continue;
+    if (fileSize(file) > limits.maxFileBytes) tooLarge += 1;
+    else if (!isSupportedPath(file.path)) unsupported += 1;
+    else limitReached += 1;
+  }
+  const filesSkipped = Math.max(0, discovered.length - analyzed.length);
+  const confidence: AnalysisCoverage["analysisConfidence"] = filesSkipped === 0 ? "high" : filesSkipped <= Math.max(1, discovered.length * 0.1) ? "medium" : "low";
+  return {
+    filesConsidered: analyzed.length,
+    filesSkipped,
+    filesSkippedByReason: { tooLarge, unsupported, limitReached },
+    treeTruncated: false,
+    analysisConfidence: confidence,
+  };
+}
+
 export async function runAnalysis(
   reference: RepositoryReference,
   provider: RepositoryProvider,
   store: AnalysisStore,
   options: AnalysisRunOptions = {},
-): Promise<Result<AnalysisJob, AppError>> {
+): Promise<Result<AnalysisResult, AppError>> {
   const limits = options.limits ?? DEFAULT_LIMITS;
-  const id = opaqueId("analysis");
+  const id = options.analysisId ?? opaqueId("analysis");
   store.startAnalysis?.(id);
   const started = nowIso();
-  let job: AnalysisJob = {
+  let job: AnalysisResult = {
     id,
     repository: { id: "pending", owner: reference.owner, name: reference.name, url: reference.url, defaultBranch: reference.branch ?? "main", selectedBranch: reference.branch ?? "main", sizeBytes: 0, fileCount: 0 },
     status: "running",
@@ -54,30 +89,40 @@ export async function runAnalysis(
     createdAt: started,
   };
   store.save(job);
-  const signal = AbortSignal.timeout(limits.maxAnalysisMs);
+  const signal = options.signal ?? AbortSignal.timeout(limits.maxAnalysisMs);
   const budget = options.budget ?? createAnalysisBudget(limits.maxAnalysisMs, options.now, signal);
-  const fail = (error: AppError): Result<AnalysisJob, AppError> => {
-    const failed: AnalysisJob = redactPathValues({ ...job, status: "failed", stage: "completed", error: { code: error.code as AnalysisError["code"], message: error.message, retryable: error.retryable, details: error.details } });
+  const progress = (stage: AnalysisResult["stage"], progressPercent: number, message: string): void => {
+    job = { ...job, stage, progressPercent, status: "running" };
+    store.save(job);
+    options.onProgress?.({ stage, progress: progressPercent, message });
+  };
+  const fail = (error: AppError): Result<AnalysisResult, AppError> => {
+    const failed: AnalysisResult = redactPathValues({ ...job, status: "failed", stage: "completed", error: { code: error.code as AnalysisError["code"], message: error.message, retryable: error.retryable, details: error.details } });
     store.save(failed);
     return err(error);
   };
 
   try {
+    progress("fetching-metadata", 12, "Reading repository metadata");
     const snapshot = await provider.getSnapshot(reference, signal, budget);
     if (!snapshot.ok) return fail(snapshot.error);
     budget.check();
     const repository = redactPathValues(snapshot.value.repository, budget);
 
+    progress("fetching-files", 28, "Fetching bounded repository content");
     const files = filterFiles(snapshot.value.files, limits, budget);
     budget.check();
     const filesDiscovered = snapshot.value.files.length;
     const filesAnalyzed = files.length;
     const bytesDiscovered = totalFileBytes(snapshot.value.files);
     const bytesAnalyzed = totalFileBytes(files);
+    const coverage: AnalysisCoverage = buildCoverage(snapshot.value.files, files, limits);
+    progress("filtering-files", 42, "Filtering for useful repository signal");
     const technologies = redactPathValues(analyzeTechnologies(files, budget), budget);
     budget.check();
     const phase3 = redactPathValues(analyzePhase3(files, budget, limits), budget);
     budget.check();
+    progress("analyzing", 58, "Finding architecture and entry points");
     const findings: typeof phase3.findings = [];
     for (const collection of [technologies, analyzeDirectories(files, budget), analyzeEntryPoints(files, budget), phase3.findings]) {
       for (const finding of collection) {
@@ -87,6 +132,7 @@ export async function runAnalysis(
     }
     const safeFindings = redactPathValues(findings, budget);
     budget.check();
+    progress("generating-diagrams", 78, "Generating evidence-backed story maps");
     const diagrams = [] as NonNullable<ReturnType<typeof repositoryStructureDiagram>>[];
     budget.check();
     diagrams.push(repositoryStructureDiagram(id, repository, files, safeFindings, budget));
@@ -112,7 +158,8 @@ export async function runAnalysis(
     for (const diagram of diagrams) { budget.check(); store.saveDiagram(redactPathValues(diagram, budget)); }
 
     budget.check();
-    job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered, filesAnalyzed, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), architectureStory, completedAt: nowIso() }, budget);
+    progress("completed", 100, "Analysis complete");
+    job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered, filesAnalyzed, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), diagrams, architectureStory, coverage, completedAt: nowIso() }, budget);
     store.save(job);
     return ok(job);
   } catch (error) {

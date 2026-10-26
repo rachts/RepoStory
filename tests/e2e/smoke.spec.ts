@@ -2,6 +2,10 @@ import { expect, test } from "@playwright/test";
 
 test("landing page exposes the RepoStory analysis flow", async ({ page }) => {
   await page.goto("/");
+  const brand = page.getByRole("link", { name: "RepoStory home" });
+  await expect(brand.locator("img")).toHaveAttribute("alt", "");
+  await expect(brand.locator("img")).toHaveAttribute("src", /repostory-icon-mark\.png/);
+  await expect(page.locator(".hero-brand-icon")).toBeVisible();
   await expect(page.getByRole("heading", { level: 1 })).toContainText("Make your codebase make sense");
   await expect(page.getByLabel("Public GitHub repository URL")).toBeVisible();
   await expect(page.getByRole("button", { name: /Tell the story/i })).toBeVisible();
@@ -71,14 +75,33 @@ test("explains a deterministic fixture in plain English before technical evidenc
     relationships: [], caveats: [], coverage: { status: "complete", partial: false, filesAnalyzed: 3, filesDiscovered: 3, analyzedFiles: 3, discoveredFiles: 3, evidenceBackedFindings: 3, evidenceBackedElements: 4, availableDiagramTypes: ["system-overview", "api-request-flow"], unavailableDiagramTypes: [], diagramAvailability: [{ type: "system-overview", available: true }, { type: "api-request-flow", available: true }, { type: "repository-structure", available: false, reason: "Fixture omits it." }, { type: "authentication-flow", available: false, reason: "No authentication evidence." }], repositoryStructureAvailable: false, systemOverviewAvailable: true, apiRequestFlowAvailable: true, authenticationFlowAvailable: false, caveats: [] },
   };
   let exportRequest: Record<string, unknown> | undefined;
+  await page.route("**/api/explain", async (route) => route.fulfill({ json: { analysisId: "fixture-analysis", model: "openai/gpt-oss-120b", generatedAt: "2026-01-01T00:00:00.000Z", explanation: {
+    projectSummary: { title: "A browser-facing fixture application", oneSentence: "A browser-facing fixture application.", plainEnglish: "A person uses the web interface to interact with the application.", evidenceIds: ["fixture-evidence"], confidence: "medium" },
+    architectureAtAGlance: { plainEnglish: "The browser-facing interface connects to application handlers.", layers: [{ name: "request-handling", simpleName: "Request handling", purpose: "Receives the supplied API request.", components: ["GET /api/items"], evidenceIds: ["fixture-evidence"], confidence: "high" }], evidenceIds: ["fixture-evidence"] },
+    mainComponents: [{ name: "Web interface", simpleName: "Web interface", whatItDoes: "Displays the application in a browser.", whyItMatters: "It is the part a person uses.", location: "src/app/page.tsx", evidenceIds: ["fixture-evidence"], confidence: "high" }],
+    howTheSystemWorks: [{ step: 1, title: "Open the interface", plainEnglish: "A person opens the web interface.", technicalDetail: "The supplied fixture contains browser-facing UI evidence.", evidenceIds: ["fixture-evidence"], confidence: "medium" }],
+    userJourney: [{ step: 1, title: "Open the interface", plainEnglish: "A person opens the web interface.", relatedRoutes: ["/api/items"], relatedComponents: ["Web interface"], evidenceIds: ["fixture-evidence"] }],
+    technologyGuide: [],
+    apiGuide: [{ route: "/api/items", method: "GET", simplePurpose: "Returns items for the interface.", requestFlow: "The fixture exposes the route as a request entry point.", evidenceIds: ["fixture-evidence"], confidence: "high" }],
+    dataAndIntegrations: [],
+    securityAndAuthentication: { plainEnglish: "No authentication evidence was supplied by this fixture.", confirmedControls: [], unknowns: ["Authentication was not confirmed."], evidenceIds: [], confidence: "needs-verification" },
+    glossary: [{ technicalTerm: "API route", simpleMeaning: "A named request endpoint.", projectSpecificMeaning: "Here it refers to GET /api/items." }],
+    knownLimitations: ["This fixture uses static evidence."],
+    confidenceNote: "The main claims have direct fixture evidence.",
+  } } }));
   await page.route("**/api/analysis/**", async (route) => route.fulfill({ json: { id: "fixture-analysis", repository: { owner: "fixture", name: "fixture-app", url: "https://github.com/fixture/fixture-app", defaultBranch: "main", selectedBranch: "main", sizeBytes: 30, fileCount: 3 }, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered: 3, filesAnalyzed: 3, technologies: [], findings: [], diagramIds: [systemDiagram.id, apiDiagram.id], diagrams: [systemDiagram, apiDiagram], architectureStory: story, createdAt: "2026-01-01T00:00:00.000Z" } }));
   await page.route("**/api/exports", async (route) => { exportRequest = route.request().postDataJSON(); await route.fulfill({ json: { content: "## How the application works\n```mermaid\nflowchart LR\n```", filename: "system-overview.md", mimeType: "text/markdown" } }); });
   await page.goto("/analysis/fixture-analysis");
   await expect(page.getByRole("heading", { level: 1, name: "How fixture-app works" })).toBeVisible();
   await expect(page.getByText("A person starts an action.")).toBeVisible();
+  await page.getByRole("button", { name: "Explain this project" }).click();
+  await expect(page.getByText("Evidence-backed explanation")).toBeVisible();
+  await expect(page.getByText("A browser-facing fixture application.")).toBeVisible();
+  await page.getByText("Evidence references (1)").first().click();
+  await expect(page.getByText("src/app/page.tsx:1").first()).toBeVisible();
   await expect(page.getByLabel("How to read this diagram")).toBeVisible();
   await page.getByRole("combobox", { name: "Element" }).selectOption("node:system-frontend");
-  await expect(page.getByRole("heading", { level: 3, name: "Web interface" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 3, name: "Web interface" }).first()).toBeVisible();
   await expect(page.getByText("What it does")).toBeVisible();
   await page.getByRole("button", { name: "Technical" }).click();
   await expect(page.getByRole("button", { name: "Technical" })).toHaveClass(/selected/);

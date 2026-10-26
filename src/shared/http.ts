@@ -82,10 +82,12 @@ export function errorResponse(error: unknown): NextResponse {
     : new AppError({ code: "ANALYSIS_FAILED", message: "The analysis could not be completed.", retryable: true });
   const status = normalized.code === "INVALID_REQUEST" || normalized.code === "INVALID_URL" || normalized.code === "INVALID_BRANCH" || normalized.code === "UNSUPPORTED_HOST" ? 400
     : normalized.code === "REPOSITORY_NOT_FOUND" ? 404
-    : normalized.code === "GITHUB_RATE_LIMITED" || normalized.code === "ANALYSIS_BUSY" ? 429
+    : normalized.code === "AI_NOT_READY" ? 409
+    : normalized.code === "GITHUB_RATE_LIMITED" || normalized.code === "ANALYSIS_BUSY" || normalized.code === "AI_RATE_LIMITED" ? 429
     : normalized.code === "REQUEST_TOO_LARGE" || normalized.code === "REPOSITORY_TOO_LARGE" || normalized.code === "GITHUB_TREE_TRUNCATED" || normalized.code === "GITHUB_RESPONSE_TOO_LARGE" || normalized.code === "GITHUB_CONTENT_TOO_LARGE" ? 413
-    : normalized.code === "ANALYSIS_TIMEOUT" ? 504
-    : normalized.code === "REPOSITORY_INACCESSIBLE" || normalized.code.startsWith("GITHUB_") ? 502
+    : normalized.code === "ANALYSIS_TIMEOUT" || normalized.code === "AI_TIMEOUT" ? 504
+    : normalized.code === "AI_NOT_CONFIGURED" || normalized.code === "AI_DISABLED" || normalized.code === "AI_AUTH_FAILED" || normalized.code === "AI_PERMISSION_DENIED" || normalized.code === "AI_MODEL_UNAVAILABLE" ? 503
+    : normalized.code === "AI_INVALID_RESPONSE" || normalized.code === "AI_REQUEST_REJECTED" || normalized.code === "AI_UPSTREAM_FAILED" || normalized.code === "REPOSITORY_INACCESSIBLE" || normalized.code.startsWith("GITHUB_") ? 502
     : 500;
   return jsonResponse({ error: { code: normalized.code, message: redactPathValues(normalized.message), details: redactPathValues(normalized.details), retryable: normalized.retryable } }, { status });
 }
