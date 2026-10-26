@@ -2,8 +2,8 @@
 
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import { parseGitHubUrl } from "@/infrastructure/providers/github-url";
+import { RepoStoryBrand, RepoStoryIcon } from "@/components/RepoStoryBrand";
 
 const exampleRepository = "https://github.com/facebook/react";
 
@@ -38,9 +38,9 @@ export default function Home(): React.JSX.Element {
         const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
         throw new Error(payload?.error?.message ?? "The repository could not be analyzed.");
       }
-      const payload = (await response.json()) as { analysisId?: string };
-      if (!payload.analysisId) throw new Error("The analysis response was incomplete.");
-      router.push(`/analysis/${encodeURIComponent(payload.analysisId)}`);
+       const payload = (await response.json()) as { jobId?: string };
+       if (!payload.jobId) throw new Error("The analysis response was incomplete.");
+       router.push(`/analysis/${encodeURIComponent(payload.jobId)}`);
     } catch (submissionError) {
       setError(submissionError instanceof Error ? submissionError.message : "Something went wrong. Try again.");
     } finally {
@@ -51,12 +51,13 @@ export default function Home(): React.JSX.Element {
   return (
     <main className="landing-page">
       <header className="site-header page-width">
-        <Link className="brand" href="/" aria-label="RepoStory home"><span className="brand-mark">R</span> RepoStory</Link>
+        <RepoStoryBrand />
         <span className="header-note"><span className="status-dot" /> Evidence-backed repository stories</span>
       </header>
 
       <section className="hero page-width">
         <div className="hero-copy">
+          <RepoStoryIcon className="hero-brand-icon" alt="RepoStory" />
           <p className="eyebrow"><span className="eyebrow-line" /> Repository intelligence</p>
           <h1>Make your codebase <em>make sense.</em></h1>
           <p className="hero-lede">RepoStory turns a public GitHub repository into a clear, evidence-backed story your whole team can follow.</p>
@@ -82,7 +83,7 @@ export default function Home(): React.JSX.Element {
       </section>
 
       <section className="steps page-width" aria-labelledby="how-it-works"><div className="section-rule" /><p className="eyebrow" id="how-it-works"><span className="eyebrow-line" /> From repository to story</p><div className="step-grid"><Step number="01" title="Point to a repo" body="Share a public GitHub URL. We read the structure, not your secrets." /><Step number="02" title="We find the signal" body="Files, entry points, technologies, and connections become evidence." /><Step number="03" title="Get the story" body="Explore diagrams in technical detail or plain English, then take them with you." /></div></section>
-      <footer className="site-footer page-width"><span>RepoStory / Phase 3</span><span>Built for clarity</span></footer>
+      <footer className="site-footer page-width"><span>Built for clarity</span></footer>
     </main>
   );
 }

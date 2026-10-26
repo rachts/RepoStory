@@ -30,4 +30,13 @@ describe("landing page", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("optional /tree/{branch}");
     expect(push).not.toHaveBeenCalled();
   });
+
+  it("renders the official mark as decorative beside the accessible wordmark", () => {
+    render(<Home />);
+    const brand = screen.getByRole("link", { name: "RepoStory home" });
+    const image = brand.querySelector("img");
+
+    expect(image).toHaveAttribute("alt", "");
+    expect(image).toHaveAttribute("src", expect.stringContaining("repostory-icon-mark.png"));
+  });
 });
