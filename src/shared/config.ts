@@ -12,6 +12,8 @@ function booleanValue(value: string | undefined, fallback: boolean): boolean {
 
 export const serverConfig = {
   githubToken: process.env.GITHUB_TOKEN,
+  supabaseUrl: process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim(),
+  supabaseSecretKey: process.env.SUPABASE_SECRET_KEY?.trim(),
   maxAnalyses: positiveInteger(process.env.REPO_STORY_MAX_ANALYSES, DEFAULT_STORE_LIMITS.maxAnalyses),
   analysisTtlMs: positiveInteger(process.env.REPO_STORY_ANALYSIS_TTL_MS, DEFAULT_STORE_LIMITS.ttlMs),
   groqApiKey: process.env.GROQ_API_KEY,
@@ -19,7 +21,13 @@ export const serverConfig = {
   groqTimeoutMs: positiveInteger(process.env.GROQ_TIMEOUT_MS, 30_000),
   groqMaxInputChars: positiveInteger(process.env.GROQ_MAX_INPUT_CHARS, 60_000),
   groqEnabled: booleanValue(process.env.GROQ_ENABLED, true),
-  jobStoreMode: process.env.REPO_STORY_JOB_STORE === "memory" || process.env.NODE_ENV === "test" ? "memory" : "file",
+  jobStoreMode: process.env.NODE_ENV === "test"
+    ? "memory"
+    : process.env.REPO_STORY_JOB_STORE === "memory"
+      ? "memory"
+      : process.env.REPO_STORY_JOB_STORE === "supabase" || Boolean(process.env.SUPABASE_SECRET_KEY?.trim() && (process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()))
+        ? "supabase"
+        : "file",
   jobStorePath: process.env.REPO_STORY_JOB_STORE_PATH?.trim() || ".repo-story-data/state.json",
   maxConcurrentJobs: positiveInteger(process.env.REPO_STORY_MAX_CONCURRENT_JOBS, 2),
   maxJobRetries: positiveInteger(process.env.REPO_STORY_MAX_JOB_RETRIES, 2),

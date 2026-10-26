@@ -535,12 +535,12 @@ authentication system.
 
 ### Store and trust boundary
 
-The default job store is the atomic file-backed `FileAnalysisJobRepository`,
-which delegates to an in-process store and persists redacted state at
-`REPO_STORY_JOB_STORE_PATH`. It defaults to a maximum of 100 analyses and a
-one-hour TTL. The directory must be writable and persistent for a production
-server. The `memory` mode is intended for tests or explicitly single-process
-ephemeral use.
+The default job store is the Supabase-backed `SupabaseAnalysisJobRepository`
+when `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are configured. Apply
+`supabase/migrations/001_repo_story.sql` before enabling it with
+`REPO_STORY_JOB_STORE=supabase`. The file-backed
+`FileAnalysisJobRepository` remains available for local single-process use;
+the `memory` mode is intended for tests or explicitly ephemeral use.
 
 The current application does not provide user authentication, private GitHub
 OAuth, per-user authorization, analysis ownership, or cross-worker persistence.
@@ -582,8 +582,10 @@ global package installation.
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
 | `GITHUB_TOKEN` | No | Optional bearer token for higher public GitHub API rate limits. | Empty. |
-| `REPO_STORY_JOB_STORE` | No | `file` for the atomic local store or `memory` for ephemeral/test use. | `file`. |
+| `REPO_STORY_JOB_STORE` | No | `supabase`, `file`, or `memory`. Supabase is selected automatically when its server credentials are present. | `file` locally. |
 | `REPO_STORY_JOB_STORE_PATH` | No | Writable persistent JSON state path when using the file store. | `.repo-story-data/state.json`. |
+| `SUPABASE_URL` | For Supabase | Server-side Supabase project URL. `NEXT_PUBLIC_SUPABASE_URL` is accepted as a fallback. | Empty. |
+| `SUPABASE_SECRET_KEY` | For Supabase | Server-only Supabase Secret key used by the REST adapter. | Empty. |
 | `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the local result store. | `100`. |
 | `REPO_STORY_ANALYSIS_TTL_MS` | No | Store entry TTL in milliseconds. | `3600000` (one hour). |
 | `GROQ_API_KEY` | No | Server-only key for the optional project explanation layer. | Empty; explanations are unavailable. |
@@ -654,11 +656,11 @@ terminal, verify the deployment with:
 curl --fail --show-error http://localhost:3000/api/health
 ```
 
-The file-backed runner is suitable for one long-running container with a
-persistent volume. A serverless or multi-instance deployment needs a durable
-database-backed `AnalysisJobRepository` and a distributed worker/queue before
-it should be exposed publicly; the current file adapter deliberately fails with
-`ANALYSIS_STORAGE_UNAVAILABLE` instead of hiding a read-only filesystem error.
+The Supabase adapter is suitable for persistent multi-instance storage, but the
+current in-process runner still executes work inside the web process. A
+serverless deployment should move job execution to a durable worker/queue
+before exposing it publicly. The file adapter remains limited to one
+long-running container with a persistent volume.
 
 ## API reference
 
