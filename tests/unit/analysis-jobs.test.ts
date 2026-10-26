@@ -3,6 +3,7 @@ import { InMemoryAnalysisStore } from "@/application/store";
 import { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import { FixtureRepositoryProvider } from "@/infrastructure/providers/fixture-provider";
 import type { AnalysisJobRecord } from "@/domain/analysis";
+import { FileAnalysisJobRepository } from "@/infrastructure/jobs/file-analysis-job-repository";
 
 function job(overrides: Partial<AnalysisJobRecord> = {}): AnalysisJobRecord {
   const now = "2026-01-01T00:00:00.000Z";
@@ -71,5 +72,14 @@ describe("durable analysis jobs", () => {
     expect(completed?.status).toBe("completed");
     expect(completed?.analysisId).toBeTruthy();
     expect(await store.getAnalysisResult(completed!.analysisId!, "session-fixture")).toBeDefined();
+  });
+
+  it("returns an actionable error when the production job-store path is not writable", async () => {
+    const repository = new FileAnalysisJobRepository({ filePath: "/dev/null/repo-story/state.json" });
+
+    await expect(repository.createJob(job())).rejects.toMatchObject({
+      code: "ANALYSIS_STORAGE_UNAVAILABLE",
+      retryable: true,
+    });
   });
 });

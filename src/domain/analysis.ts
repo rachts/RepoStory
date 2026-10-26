@@ -145,6 +145,7 @@ export interface AnalysisError {
     | "UNSUPPORTED_HOST"
     | "REPOSITORY_NOT_FOUND"
     | "REPOSITORY_INACCESSIBLE"
+    | "GITHUB_AUTH_FAILED"
     | "REPOSITORY_TOO_LARGE"
     | "FILE_LIMIT_EXCEEDED"
     | "GITHUB_RATE_LIMITED"
@@ -158,6 +159,7 @@ export interface AnalysisError {
     | "GITHUB_RESPONSE_READ_FAILED"
     | "INVALID_BRANCH"
     | "ANALYSIS_TIMEOUT"
+    | "ANALYSIS_STORAGE_UNAVAILABLE"
     | "ANALYSIS_FAILED"
     | "CANCELLED";
   message: string;
