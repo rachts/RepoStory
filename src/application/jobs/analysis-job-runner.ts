@@ -20,7 +20,12 @@ export interface AnalysisJobRunnerOptions {
 
 function safeError(error: unknown): AppError {
   if (error instanceof AppError) return error;
-  return new AppError({ code: "ANALYSIS_FAILED", message: "The analysis could not be completed.", retryable: true });
+  if (error instanceof Error) {
+    console.error("[RepoStory] unexpected analysis error", error);
+    return new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true });
+  }
+  console.error("[RepoStory] unexpected analysis failure", error);
+  return new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true });
 }
 
 function repositoryReference(job: AnalysisJobRecord): RepositoryReference {
