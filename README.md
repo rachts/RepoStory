@@ -535,10 +535,12 @@ authentication system.
 
 ### Store and trust boundary
 
-The default store is an `InMemoryAnalysisStore` held through `globalThis` in the
-application process. It defaults to a maximum of 100 analyses and a one-hour
-idle TTL. These defaults can be changed with the environment variables below,
-but the data is still process-local.
+The default job store is the atomic file-backed `FileAnalysisJobRepository`,
+which delegates to an in-process store and persists redacted state at
+`REPO_STORY_JOB_STORE_PATH`. It defaults to a maximum of 100 analyses and a
+one-hour TTL. The directory must be writable and persistent for a production
+server. The `memory` mode is intended for tests or explicitly single-process
+ephemeral use.
 
 The current application does not provide user authentication, private GitHub
 OAuth, per-user authorization, analysis ownership, or cross-worker persistence.
@@ -580,6 +582,8 @@ global package installation.
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
 | `GITHUB_TOKEN` | No | Optional bearer token for higher public GitHub API rate limits. | Empty. |
+| `REPO_STORY_JOB_STORE` | No | `file` for the atomic local store or `memory` for ephemeral/test use. | `file`. |
+| `REPO_STORY_JOB_STORE_PATH` | No | Writable persistent JSON state path when using the file store. | `.repo-story-data/state.json`. |
 | `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the local result store. | `100`. |
 | `REPO_STORY_ANALYSIS_TTL_MS` | No | Store entry TTL in milliseconds. | `3600000` (one hour). |
 | `GROQ_API_KEY` | No | Server-only key for the optional project explanation layer. | Empty; explanations are unavailable. |
@@ -630,18 +634,17 @@ listens on port `3000` by default.
 
 ### Docker
 
-A multi-stage `Dockerfile` is committed. It pins `node:22.14.0-alpine`, builds
-the standalone Next.js output, creates a non-root `nextjs` user, binds the
-standalone server to `0.0.0.0`, exposes port 3000, and declares a health check
-against `/api/health`.
+A multi-stage `Dockerfile` pins `node:22.14.0-alpine`, builds the standalone
+Next.js output, creates a non-root `nextjs` user, binds the server to
+`0.0.0.0`, exposes port 3000, and declares a health check against
+`/api/health`. Mount a persistent volume at `/app/data`; without that volume,
+job state is lost when the container is replaced.
 
-The Docker path is **not verified in this environment** because the Docker CLI
-is unavailable here. When Docker is available, build and run the local
-deployment artifact with:
+When Docker is available, build and run the deployment artifact with:
 
 ```bash
 docker build --tag repo-story:local .
-docker run --rm --name repo-story --publish 3000:3000 --env-file .env.local repo-story:local
+docker run --rm --name repo-story --publish 3000:3000 --env-file .env.local --volume repo-story-data:/app/data repo-story:local
 ```
 
 The container runs in the foreground; press `Ctrl-C` to stop it. In another
@@ -651,8 +654,11 @@ terminal, verify the deployment with:
 curl --fail --show-error http://localhost:3000/api/health
 ```
 
-Do not treat the Dockerfile's presence as proof that a particular hosting
-provider, network policy, or production configuration has been validated.
+The file-backed runner is suitable for one long-running container with a
+persistent volume. A serverless or multi-instance deployment needs a durable
+database-backed `AnalysisJobRepository` and a distributed worker/queue before
+it should be exposed publicly; the current file adapter deliberately fails with
+`ANALYSIS_STORAGE_UNAVAILABLE` instead of hiding a read-only filesystem error.
 
 ## API reference
 

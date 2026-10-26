@@ -5,6 +5,7 @@ import type { AnalysisJobRecord, AnalysisResult } from "@/domain/analysis";
 import type { Diagram } from "@/domain/diagram";
 import type { AnalysisJobPatch, AnalysisJobRepository, PersistedAnalysisRepositoryState } from "@/application/jobs/analysis-job-repository";
 import { InMemoryAnalysisStore } from "@/application/store";
+import { AppError } from "@/domain/errors";
 
 /**
  * Single-process durable adapter. It persists redacted state atomically to a
@@ -21,6 +22,14 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
     this.delegate = new InMemoryAnalysisStore({ maxAnalyses: options.maxAnalyses, ttlMs: options.ttlMs });
   }
 
+  private storageError(operation: string): AppError {
+    return new AppError({
+      code: "ANALYSIS_STORAGE_UNAVAILABLE",
+      message: `Analysis storage is unavailable while ${operation}. Configure a writable REPO_STORY_JOB_STORE_PATH or use a durable database-backed deployment adapter.`,
+      retryable: true,
+    });
+  }
+
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
@@ -30,17 +39,25 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
       this.delegate.importState(state);
       await this.delegate.markExpiredJobs();
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error("[RepoStory] unable to load analysis storage", error);
+        throw this.storageError("loading the job store");
+      }
     }
   }
 
   private async persist(): Promise<void> {
     const state = this.delegate.exportState();
     this.writeQueue = this.writeQueue.then(async () => {
-      await mkdir(dirname(this.filePath), { recursive: true });
-      const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-      await writeFile(temporaryPath, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
-      await rename(temporaryPath, this.filePath);
+      try {
+        await mkdir(dirname(this.filePath), { recursive: true });
+        const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+        await writeFile(temporaryPath, JSON.stringify(state), { encoding: "utf8", mode: 0o600 });
+        await rename(temporaryPath, this.filePath);
+      } catch (error) {
+        console.error("[RepoStory] unable to persist analysis storage", error);
+        throw this.storageError("saving the job store");
+      }
     });
     await this.writeQueue;
   }

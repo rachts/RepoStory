@@ -34,10 +34,16 @@ function treeTooLarge(maxEntries: number): AppError {
 }
 
 function responseFailure(response: Response, stage: string): AppError {
+  if (response.status === 401) {
+    return new AppError({ code: "GITHUB_AUTH_FAILED", message: "GitHub rejected the configured token. Remove GITHUB_TOKEN for anonymous public access or configure a valid token.", retryable: false });
+  }
   if (response.status === 429 || (response.status === 403 && response.headers.get("x-ratelimit-remaining") === "0")) {
     const reset = response.headers.get("x-ratelimit-reset");
     const resetEpoch = reset && /^\d+$/.test(reset) ? Number(reset) : undefined;
     return new AppError({ code: "GITHUB_RATE_LIMITED", message: "GitHub API rate limit reached. Add GITHUB_TOKEN or retry after the limit resets.", retryable: true, details: resetEpoch ? { resetAt: resetEpoch } : undefined });
+  }
+  if (response.status === 403) {
+    return new AppError({ code: "REPOSITORY_INACCESSIBLE", message: `GitHub denied access to the ${stage} request. Confirm the repository is public and the configured token has access.`, retryable: false });
   }
   return new AppError({
     code: "REPOSITORY_INACCESSIBLE",
