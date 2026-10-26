@@ -22,33 +22,37 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
     this.delegate = new InMemoryAnalysisStore({ maxAnalyses: options.maxAnalyses, ttlMs: options.ttlMs });
   }
 
-  private storageError(operation: string): AppError {
+  private storageError(operation: string, cause?: unknown): AppError {
+    const causeCode = cause && typeof cause === "object" && "code" in cause && typeof cause.code === "string" ? cause.code : undefined;
     return new AppError({
       code: "ANALYSIS_STORAGE_UNAVAILABLE",
       message: `Analysis storage is unavailable while ${operation}. Configure a writable REPO_STORY_JOB_STORE_PATH or use a durable database-backed deployment adapter.`,
       retryable: true,
+      details: { path: this.filePath, ...(causeCode ? { cause: causeCode } : {}) },
     });
   }
 
   private async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
-    this.loaded = true;
     try {
       const raw = await readFile(this.filePath, "utf8");
       const state = JSON.parse(raw) as PersistedAnalysisRepositoryState;
       this.delegate.importState(state);
       await this.delegate.markExpiredJobs();
+      this.loaded = true;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.loaded = true;
+      } else {
         console.error("[RepoStory] unable to load analysis storage", error);
-        throw this.storageError("loading the job store");
+        throw this.storageError("loading the job store", error);
       }
     }
   }
 
   private async persist(): Promise<void> {
     const state = this.delegate.exportState();
-    this.writeQueue = this.writeQueue.then(async () => {
+    const operation = this.writeQueue.catch(() => undefined).then(async () => {
       try {
         await mkdir(dirname(this.filePath), { recursive: true });
         const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
@@ -56,10 +60,11 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
         await rename(temporaryPath, this.filePath);
       } catch (error) {
         console.error("[RepoStory] unable to persist analysis storage", error);
-        throw this.storageError("saving the job store");
+        throw this.storageError("saving the job store", error);
       }
     });
-    await this.writeQueue;
+    this.writeQueue = operation.catch(() => undefined);
+    await operation;
   }
 
   public async createJob(job: AnalysisJobRecord): Promise<AnalysisJobRecord> { await this.ensureLoaded(); const result = await this.delegate.createJob(job); await this.persist(); return result; }

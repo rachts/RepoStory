@@ -4,6 +4,7 @@ import type { AnalysisJobRepository } from "@/application/jobs/analysis-job-repo
 import { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import { GitHubPublicRepositoryProvider } from "@/infrastructure/providers/github-provider";
 import { FileAnalysisJobRepository } from "@/infrastructure/jobs/file-analysis-job-repository";
+import { SupabaseAnalysisJobRepository } from "@/infrastructure/jobs/supabase-analysis-job-repository";
 import { serverConfig } from "@/shared/config";
 import type { AnalysisJob } from "@/domain/analysis";
 import { AppError } from "@/domain/errors";
@@ -23,9 +24,13 @@ export const repositoryProvider = new GitHubPublicRepositoryProvider({
   token: serverConfig.githubToken,
 });
 
-export const analysisRepository: AnalysisJobRepository = globalContainer.repoStoryAnalysisRepository ?? (serverConfig.jobStoreMode === "file"
-  ? new FileAnalysisJobRepository({ filePath: serverConfig.jobStorePath, maxAnalyses: serverConfig.maxAnalyses, ttlMs: serverConfig.jobTtlMs })
-  : analysisStore);
+export const analysisRepository: AnalysisJobRepository = globalContainer.repoStoryAnalysisRepository ?? (
+  serverConfig.jobStoreMode === "supabase"
+    ? new SupabaseAnalysisJobRepository({ url: serverConfig.supabaseUrl, secretKey: serverConfig.supabaseSecretKey, maxAnalyses: serverConfig.maxAnalyses, ttlMs: serverConfig.jobTtlMs })
+    : serverConfig.jobStoreMode === "file"
+      ? new FileAnalysisJobRepository({ filePath: serverConfig.jobStorePath, maxAnalyses: serverConfig.maxAnalyses, ttlMs: serverConfig.jobTtlMs })
+      : analysisStore
+);
 globalContainer.repoStoryAnalysisRepository = analysisRepository;
 
 export const analysisJobRunner = globalContainer.repoStoryJobRunner ?? new AnalysisJobRunner(analysisRepository, repositoryProvider);
