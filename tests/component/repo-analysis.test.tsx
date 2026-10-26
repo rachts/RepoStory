@@ -210,6 +210,24 @@ describe("RepoAnalysis diagram navigation", () => {
     expect(await screen.findByText("README Markdown copied")).toBeInTheDocument();
   });
 
+  it("falls back to the diagram already loaded in the workspace when the export store misses it", async () => {
+    const initial = diagram("repository-structure", "Repository structure");
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    fetchMock
+      .mockResolvedValueOnce({ ok: true, json: async () => analysis([initial], undefined, architectureStory()) })
+      .mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found." } }) });
+
+    render(<RepoAnalysis analysisId="analysis-ui" />);
+
+    await screen.findByRole("heading", { level: 2, name: "Repository structure" });
+    fireEvent.click(screen.getByRole("button", { name: "Copy README Markdown" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(expect.stringContaining("# Repository structure")));
+    expect(await screen.findByText("README Markdown copied")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("shows export progress while the draft is being persisted", async () => {
     const initial = diagram("repository-structure", "Repository structure");
     const persisted = { ...initial, title: "Edited title" };

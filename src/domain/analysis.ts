@@ -2,15 +2,16 @@ import type { AnalysisFinding, ApiRouteFinding, AuthenticationFinding, DatabaseF
 import type { DiagramType } from "@/domain/diagram";
 import type { Repository, RepositoryFile } from "@/domain/repository";
 import type { ArchitectureStory } from "@/domain/architecture-story";
+import type { ProjectExplanation } from "@/domain/ai-explanation";
 
-export type AnalysisStatus =
+export type AnalysisResultStatus =
   | "pending"
   | "running"
   | "completed"
   | "failed"
   | "cancelled";
 
-export type AnalysisStage =
+export type AnalysisResultStage =
   | "validating"
   | "fetching-metadata"
   | "fetching-files"
@@ -19,11 +20,84 @@ export type AnalysisStage =
   | "generating-diagrams"
   | "completed";
 
-export interface AnalysisJob {
+export type AnalysisJobStatus =
+  | "queued"
+  | "fetching"
+  | "analyzing"
+  | "explaining"
+  | "completed"
+  | "failed"
+  | "expired"
+  | "cancelled";
+
+export type AnalysisJobStage =
+  | "validating-input"
+  | "fetching-metadata"
+  | "fetching-tree"
+  | "fetching-content"
+  | "analyzing-repository"
+  | "generating-explanation"
+  | "storing-result"
+  | "completed";
+
+export type AnalysisConfidence = "high" | "medium" | "low";
+
+export interface AnalysisCoverage {
+  filesConsidered: number;
+  filesSkipped: number;
+  filesSkippedByReason: {
+    tooLarge: number;
+    unsupported: number;
+    limitReached: number;
+  };
+  treeTruncated: boolean;
+  analysisConfidence: AnalysisConfidence;
+}
+
+export interface AnalysisJobProgress {
+  progress: number;
+  stage: AnalysisJobStage;
+  message: string;
+}
+
+export interface AnalysisJobError {
+  code: string;
+  message: string;
+  retryable: boolean;
+  details?: Record<string, string | number | boolean>;
+}
+
+export interface AnalysisJobRecord {
+  jobId: string;
+  analysisId: string | null;
+  repositoryUrl: string;
+  branch: string;
+  requestedBranch?: string;
+  ownerId: string;
+  cacheKey: string;
+  status: AnalysisJobStatus;
+  stage: AnalysisJobStage;
+  progress: number;
+  message: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  retryCount: number;
+  explanationRequested: boolean;
+  cancellationRequested?: boolean;
+  error?: AnalysisJobError;
+  coverage?: AnalysisCoverage;
+}
+
+/**
+ * The deterministic analysis payload. This is kept separate from the durable
+ * job record so status polling never has to carry the full result.
+ */
+export interface AnalysisResult {
   id: string;
   repository: Repository;
-  status: AnalysisStatus;
-  stage: AnalysisStage;
+  status: AnalysisResultStatus;
+  stage: AnalysisResultStage;
   progressPercent: number;
   filesDiscovered: number;
   filesAnalyzed: number;
@@ -41,7 +115,17 @@ export interface AnalysisJob {
   createdAt: string;
   completedAt?: string;
   diagrams?: import("@/domain/diagram").Diagram[];
+  coverage?: AnalysisCoverage;
+  explanation?: ProjectExplanation;
+  explanationUnavailable?: { code: string; message: string };
 }
+
+/** Backward-compatible result name used by the existing UI and test fixtures. */
+export type AnalysisJob = AnalysisResult;
+
+/** Backward-compatible names for older pipeline consumers. */
+export type LegacyAnalysisStatus = AnalysisResultStatus;
+export type LegacyAnalysisStage = AnalysisResultStage;
 
 export interface DiagramAvailability {
   type: DiagramType;

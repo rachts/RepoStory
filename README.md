@@ -20,8 +20,9 @@ explanations while keeping the static analysis layer as the source of truth.
 > contents. Inferred relationships are marked with confidence information and
 > should be reviewed by the project owner.
 
-This repository contains the current synchronous Phase 3 implementation. It is
-not a claim that every repository can be completely or perfectly understood.
+This repository contains the current asynchronous Phase 3 implementation with
+a single-process local job runner. It is not a claim that every repository can
+be completely or perfectly understood.
 
 ## Contents
 
@@ -32,6 +33,7 @@ not a claim that every repository can be completely or perfectly understood.
 - [Architecture](#architecture)
 - [Analysis stages](#analysis-stages)
 - [Evidence and confidence model](#evidence-and-confidence-model)
+- [Optional AI explanation layer](#optional-ai-explanation-layer)
 - [Supported diagram types](#supported-diagram-types)
 - [Editing and export workflow](#editing-and-export-workflow)
 - [Security and privacy](#security-and-privacy)
@@ -65,8 +67,9 @@ structured findings. Those findings can become:
 The current implementation deliberately separates deterministic analysis from
 presentation. The analyzers inspect package manifests, conventional paths,
 source text, imports, and configuration. The UI then presents those findings in
-an editable React Flow workspace. There is no separate AI or hosted model
-service in this codebase.
+an editable React Flow workspace. An optional server-side Groq pass can turn
+completed deterministic findings into a longer plain-English explanation, but
+it never replaces the static analysis source of truth.
 
 ### A small example
 
@@ -92,8 +95,10 @@ The current repository does not include committed product screenshots. Run the
 application locally to inspect the landing page, analysis progress state,
 results workspace, diagram editor, evidence panel, and clipboard export flow.
 
-The committed `public/` assets are the default static assets from the Next.js
-starter setup, not product screenshots.
+The official RepoStory icon is stored at `public/repostory-icon.png`. The
+square `public/repostory-icon-mark.png` derivative is used only where compact
+surfaces such as the header and browser icon need a legible mark. The repository
+does not include committed product screenshots.
 
 ## Core capabilities
 
@@ -119,16 +124,17 @@ the analyzed application or prove runtime behavior.
 | Evidence references | Attaches file paths, line information, redacted excerpts, and reasons to findings and diagram elements. | **Available**. |
 | Confidence levels | Carries `high`, `medium`, `low`, and `needs-verification` through the domain model. | **Available**; the current detectors primarily emit high, medium, and needs-verification findings. |
 | Plain-English architecture story | Leads with what the application appears to do, then shows request steps, coverage, confidence, caveats, and source-backed technical evidence. | **Available**; the narrative stays conservative when a diagram or request flow is unavailable. |
+| Optional AI project explanation | Sends a bounded, sanitized summary of a completed deterministic analysis to Groq and renders a validated plain-English explanation with evidence references. | **Available when configured**; disabled or unavailable AI never blocks diagrams or deterministic analysis. |
 | Repository structure diagram | Maps the repository name to detected top-level directories. | **Available** for completed analyses. |
 | System overview diagram | Connects a user, application, and detected technologies when technology evidence exists. | **Conditional**. |
 | API request-flow diagram | Connects a client, detected routes, related local modules, database evidence, and integration evidence. | **Conditional** on route evidence. |
 | Authentication-flow diagram | Maps authentication evidence, optional session/token state, related modules, and detected endpoints. | **Conditional** on meaningful authentication evidence. |
 | React Flow preview | Renders the generated diagrams in the browser with technical/plain-English label modes. | **Available** through `@xyflow/react`. |
 | Diagram editing | Edits titles, descriptions, notes, node and edge labels, explanations, visibility, and direction. | **Available** for generated nodes and edges; arbitrary new elements are not supported. |
-| Undo, redo, reset, and save | Keeps a browser draft history, persists valid edits through the diagram API, and restores the generated baseline. | **Available** within the process-local store. |
+| Undo, redo, reset, and save | Keeps a browser draft history, persists valid edits through the diagram API, and restores the generated baseline. | **Available** through the local result repository. |
 | Mermaid export | Returns Mermaid flowchart source containing only visible nodes and valid visible edges. | **Available** through the UI and `POST /api/exports`. |
 | README Markdown export | Returns Markdown with a Mermaid block, components, connections, confidence, optional explanations, optional evidence, and optional attribution. | **Available**; the browser copies content to the clipboard rather than downloading a file. |
-| Synchronous analysis | Completes the bounded pipeline in the request and stores the completed result. | **Available**; no background worker is started. |
+| Asynchronous analysis jobs | Accepts a job with HTTP `202`, reports progress, supports bounded polling, cancellation, retries, deduplication, TTLs, and local persistence. | **Available** through the single-process runner; not a distributed queue. |
 | Offline fixture tests | Exercises analysis and security behavior without GitHub network access. | **Available** through `make test`. |
 
 ## How RepoStory works
@@ -145,11 +151,14 @@ flowchart LR
   static --> evidence["Collect redacted evidence"]
   evidence --> confidence["Assign confidence"]
   confidence --> diagrams["Generate available diagrams"]
+  diagrams --> explain["Optional server-side Groq explanation"]
   diagrams --> edit["Interactive editing"]
+  explain --> edit
   edit --> export["Mermaid or README Markdown export"]
 ```
 
-The first implementation is synchronous and bounded:
+The request and execution lifecycle is asynchronous, while the deterministic
+analysis work remains bounded:
 
 1. The API validates the request with Zod and parses the GitHub URL.
 2. The repository provider reads metadata, the recursive tree, and selected
@@ -163,9 +172,14 @@ The first implementation is synchronous and bounded:
 5. Each finding receives source-backed evidence and a confidence level.
 6. Diagram generators omit diagrams when their evidence preconditions are not
    met. The analysis response reports those availability decisions.
-7. Diagrams are saved in the process-local in-memory store and rendered in the
-   React Flow workspace.
-8. Edits are validated server-side. Mermaid and Markdown serializers preserve
+7. The API creates an opaque job and returns `202`; the local runner fetches,
+   analyzes, persists the deterministic result, and updates progress.
+8. Diagrams are saved through the configured local result repository and
+   rendered in the React Flow workspace.
+9. An optional explanation request sends only a bounded, redacted summary of a
+   completed analysis to the server-side Groq client. The response is validated
+   against a strict schema and checked against the supplied evidence IDs.
+10. Edits are validated server-side. Mermaid and Markdown serializers preserve
    visible, redacted, escaped content.
 
 The analyzed repository is treated as text. RepoStory does **not** execute
@@ -174,22 +188,27 @@ services. The analysis budget is bounded by file, response, content, path, and
 time limits. A fixture provider is used by the test suite so the deterministic
 pipeline can run offline.
 
-The current explanation layer is the deterministic `plainEnglishLabel`,
-`explanation`, and `technicalDetail` data emitted by the analyzers and diagram
-generators. It is not an optional LLM pass. A public multi-user deployment
-would also need an ownership/session boundary because the current store is
-process-local.
+The deterministic `plainEnglishLabel`, `explanation`, and `technicalDetail`
+fields remain the source of truth. The optional AI layer only summarizes the
+bounded, sanitized deterministic result. The current app has an anonymous
+opaque session boundary and a local single-process job repository; a public
+multi-user deployment would still need authenticated ownership and distributed
+storage/worker semantics.
 
 ## Architecture
 
 The following diagram reflects the current source layout and request paths. It
-does not include a database, queue, worker, AI provider, or user-authentication
-service because none of those components is implemented in this repository.
+shows the local asynchronous runner and JSON repository, but deliberately does
+not imply a distributed queue, database, or user-authentication service. The
+optional Groq provider is server-side and only receives completed, sanitized
+analysis summaries.
 
 ```mermaid
 flowchart LR
   browser["Browser UI<br/>Next.js App Router"]
-  analyze["POST /api/analyze"]
+  analyze["POST /api/analyze<br/>202 job accepted"]
+  jobs["AnalysisJobRunner<br/>bounded local concurrency"]
+  status["Job status/cancel/retry routes"]
   parser["parseGitHubUrl"]
   provider["GitHubPublicRepositoryProvider"]
   github["GitHub Public API<br/>api.github.com"]
@@ -197,8 +216,11 @@ flowchart LR
   analyzers["Deterministic analyzers<br/>technology, routes, modules,<br/>databases, integrations, auth"]
   evidence["Evidence collector"]
   generators["Diagram generators"]
-  store["InMemoryAnalysisStore<br/>TTL and capacity bounds"]
-  reads["Analysis read routes<br/>/api/analysis/:id"]
+  explain["POST /api/explain<br/>server-side Groq client"]
+  groq["Groq structured output API"]
+  store["FileAnalysisJobRepository<br/>atomic local JSON + TTL"]
+  memory["InMemoryAnalysisStore<br/>test adapter and diagrams"]
+  reads["Analysis read routes<br/>/api/analyze/:id"]
   diagramApi["Diagram routes<br/>GET, PATCH, reset"]
   flow["React Flow results<br/>preview and editor"]
   exportsApi["POST /api/exports"]
@@ -206,13 +228,20 @@ flowchart LR
 
   browser --> analyze
   analyze --> parser
-  parser --> provider
+  analyze --> jobs
+  jobs --> parser
+  browser --> status
+  status --> jobs
   provider --> github
   provider --> filter
   filter --> analyzers
   analyzers --> evidence
   evidence --> generators
   generators --> store
+  store --> memory
+  browser --> explain
+  store --> explain
+  explain --> groq
   store --> reads
   reads --> flow
   flow --> diagramApi
@@ -234,11 +263,14 @@ src/
 ├── components/RepoAnalysis.tsx          # React Flow workspace and editor
 ├── analysis/                            # static detectors, diagrams, exports
 ├── application/
-│   ├── pipeline.ts                       # synchronous analysis orchestration
-│   ├── store.ts                          # process-local analysis/diagram store
+│   ├── pipeline.ts                       # deterministic bounded analysis orchestration
+│   ├── jobs/                             # durable job contract, identity, and runner
+│   ├── store.ts                          # in-memory result/test adapter
 │   └── diagram-edits.ts                  # validated edit transformation
 ├── composition/container.ts              # runtime provider/store wiring
 ├── domain/                               # analysis, finding, diagram, export types
+├── infrastructure/ai/groq-client.ts      # server-only optional explanation client
+├── infrastructure/jobs/                   # local atomic JSON job repository
 ├── infrastructure/providers/             # GitHub and fixture repository providers
 └── shared/                               # limits, redaction, HTTP, text, IDs
 
@@ -270,6 +302,7 @@ by tests and is not the production provider selected by the web application.
 | Evidence collection | Record path, line, redacted excerpt, and reason for each finding. | `EvidenceReference[]`. | Deterministic. |
 | Confidence assignment | Preserve direct, inferred, and unresolved states. | Confidence on findings, nodes, edges, and availability. | Deterministic heuristic. |
 | Diagram generation | Build repository, system, API, and authentication diagrams only when their evidence conditions are met. | `Diagram` objects and availability reasons. | Deterministic and conditional. |
+| Optional AI explanation | Summarize a completed deterministic result from a bounded, sanitized payload. | Validated `ProjectExplanation` or structured unavailable/error state. | Server-side Groq request; never required for analysis. |
 | Editing and persistence | Validate edits, preserve evidence, and store the edited diagram. | Updated diagram in the in-memory store. | Synchronous and process-local. |
 | Export generation | Serialize visible diagram content to Mermaid or Markdown. | JSON export response with content, filename, and MIME type. | Deterministic. |
 
@@ -320,6 +353,40 @@ The `low` value is part of the shared domain contract, but the current checked
 detectors primarily produce `high`, `medium`, and `needs-verification`. Diagram
 generators preserve the confidence they receive instead of upgrading weak
 evidence.
+
+## Optional AI explanation layer
+
+The analysis page includes an explicit **Explain this project** action. It is
+optional and non-blocking: deterministic diagrams, findings, evidence, and
+exports are available without it.
+
+When enabled, the server:
+
+1. accepts only an opaque `analysisId` from the browser;
+2. loads the completed analysis from the local result repository;
+3. builds a bounded JSON payload containing sanitized labels, findings, diagram
+   summaries, and evidence IDs;
+4. sends that payload to Groq using `GROQ_API_KEY` on the server only;
+5. validates the structured response with Zod; and
+6. rejects any response that references evidence IDs not supplied by the
+   deterministic analysis.
+
+Repository code is never executed, and the analyzed repository's dependencies
+are never installed. Repository-derived strings are treated as untrusted data,
+including README text, comments, source excerpts, and labels that may contain
+prompt-injection instructions.
+
+The browser never receives `GROQ_API_KEY`. If Groq is disabled, unconfigured,
+rate-limited, times out, or returns an invalid response, the UI shows a clear
+status while keeping the deterministic result usable.
+
+The default `openai/gpt-oss-120b` configuration disables returned reasoning
+tokens and uses Groq Structured Outputs. This avoids mixing reasoning output
+with the JSON explanation contract. Models outside the known strict-output set
+fall back to JSON mode and still pass through the same Zod validation before
+anything is rendered or persisted. Non-retryable provider errors such as an
+invalid key, denied access, unavailable model, or rejected request are surfaced
+as configuration failures instead of being mislabeled as transient outages.
 
 ## Supported diagram types
 
@@ -409,6 +476,10 @@ authentication system.
 - **Server-side GitHub access.** GitHub requests are made by the provider used
   by the Next.js route handler. `GITHUB_TOKEN` is read from server-side
   environment configuration and is not part of the browser request body.
+- **Server-side Groq access.** The optional explanation route accepts only an
+  opaque analysis ID. `GROQ_API_KEY` is read by the server-only Groq client and
+  is never sent to the browser, included in the explanation payload, or exposed
+  in error responses.
 - **Browser and response hardening.** The Next.js configuration disables the
   framework signature and sends `nosniff`, same-origin framing/resource policies,
   a strict referrer policy, a restrictive permissions policy, and cross-origin
@@ -457,6 +528,10 @@ authentication system.
   serialized.
 - **Structured error responses.** API errors include a code, message, and
   retryability field rather than exposing arbitrary exceptions.
+- **Bounded AI input and output.** The explanation mapper caps the serialized
+  input with `GROQ_MAX_INPUT_CHARS`, redacts secret-like values and paths, and
+  preserves evidence IDs. Groq output is strict JSON, revalidated with Zod, and
+  rejected when it references evidence IDs outside the supplied analysis.
 
 ### Store and trust boundary
 
@@ -505,8 +580,13 @@ global package installation.
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
 | `GITHUB_TOKEN` | No | Optional bearer token for higher public GitHub API rate limits. | Empty. |
-| `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the process-local store. | `100`. |
+| `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the local result store. | `100`. |
 | `REPO_STORY_ANALYSIS_TTL_MS` | No | Store entry TTL in milliseconds. | `3600000` (one hour). |
+| `GROQ_API_KEY` | No | Server-only key for the optional project explanation layer. | Empty; explanations are unavailable. |
+| `GROQ_MODEL` | No | Groq model used for structured explanations. | `openai/gpt-oss-120b`. |
+| `GROQ_TIMEOUT_MS` | No | Maximum time allowed for one explanation request. | `30000`. |
+| `GROQ_MAX_INPUT_CHARS` | No | Maximum serialized sanitized analysis payload sent to Groq. | `60000`. |
+| `GROQ_ENABLED` | No | Enables or disables the optional explanation route. | `true`. |
 
 Do not commit `.env.local` or a real token. The repository ignores `.env*`
 files except for `.env.example`.
@@ -577,8 +657,9 @@ provider, network policy, or production configuration has been validated.
 ## API reference
 
 The API is implemented as Next.js App Router route handlers under
-`src/app/api`. The routes do not require an application login or session token.
-Analysis and diagram IDs refer to entries in the current process-local store.
+`src/app/api`. The routes use an anonymous opaque session cookie for ownership;
+this is not authentication. Analysis and diagram IDs are opaque and are scoped
+to that session in the application flow.
 
 ### `GET /api/health`
 
@@ -593,7 +674,7 @@ Returns a small liveness response.
 
 ### `POST /api/analyze`
 
-Starts and completes a synchronous analysis for a public GitHub repository.
+Accepts and queues an asynchronous analysis for a public GitHub repository.
 
 Request body:
 
@@ -668,6 +749,69 @@ and:
 
 If the ID has expired, been evicted, or never existed, the route returns `404`
 with `ANALYSIS_NOT_FOUND`.
+
+### `POST /api/explain`
+
+Requests an optional plain-English explanation for a completed deterministic
+analysis. The browser sends only the opaque analysis ID:
+
+```json
+{
+  "analysisId": "analysis-123e4567-e89b-12d3-a456-426614174000"
+}
+```
+
+The server builds a bounded, redacted evidence payload and calls Groq only when
+`GROQ_ENABLED=true` and `GROQ_API_KEY` is configured. The response is validated
+against the strict `ProjectExplanation` contract:
+
+```json
+{
+  "analysisId": "analysis-123e4567-e89b-12d3-a456-426614174000",
+  "model": "openai/gpt-oss-120b",
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "explanation": {
+    "projectSummary": {
+      "title": "...",
+      "oneSentence": "...",
+      "plainEnglish": "...",
+      "evidenceIds": [],
+      "confidence": "high"
+    },
+    "architectureAtAGlance": { "plainEnglish": "...", "layers": [], "evidenceIds": [] },
+    "mainComponents": [],
+    "howTheSystemWorks": [],
+    "userJourney": [],
+    "technologyGuide": [],
+    "apiGuide": [],
+    "dataAndIntegrations": [],
+    "securityAndAuthentication": {
+      "plainEnglish": "...",
+      "confirmedControls": [],
+      "unknowns": [],
+      "evidenceIds": [],
+      "confidence": "needs-verification"
+    },
+    "glossary": [],
+    "knownLimitations": [],
+    "confidenceNote": "..."
+  }
+}
+```
+
+The explanation is organized for a non-technical reader: what the project does,
+how it is organized, how supported requests move through it, the main parts,
+technology and API guides, data/integrations, security evidence, and a glossary.
+Each claim that points to repository evidence carries one or more `evidenceIds`.
+The server rejects IDs that were not supplied by deterministic analysis. Empty
+sections are intentional: the model must not invent generic architecture when the
+repository does not provide enough evidence.
+
+`404 ANALYSIS_NOT_FOUND` means the process-local analysis expired or was
+evicted. `409 AI_NOT_READY` means deterministic analysis is not complete.
+`503 AI_NOT_CONFIGURED` or `AI_DISABLED` means the optional layer is unavailable.
+Timeouts, rate limits, upstream failures, invalid structured output, and
+invented evidence references return retryable structured errors.
 
 ### `GET /api/analysis/:analysisId/diagrams`
 
@@ -808,14 +952,18 @@ GitHub token or live GitHub access.
   workflow.
 - **Route-handler tests** call the analyze and diagram API handlers directly and
   verify structured errors, patch validation, and missing-resource behavior.
+- **AI explanation tests** validate bounded/redacted input, strict Zod output,
+  mocked Groq success and failure mapping, missing/incomplete analysis behavior,
+  and rejection of invented evidence IDs. They never call the real Groq API.
 - **Component tests** use Testing Library with jsdom to exercise landing-page
   URL validation and the results workspace: diagram navigation, unavailable
-  diagram reasons, save-before-export, progress feedback, and stale-draft
-  protection.
+  diagram reasons, save-before-export, progress feedback, stale-draft
+  protection, and the optional explanation panel's success, retry, and
+  unavailable states.
 - **Playwright end-to-end tests** use the configured Chromium project and a
   development server. They cover the landing page and a deterministic diagram
-  edit/save/README-export flow with mocked API responses. They do not run a live
-  GitHub repository analysis.
+  edit/save/README-export flow plus a mocked AI explanation flow. They do not
+  run a live GitHub repository analysis or call Groq.
 
 ### Fixture repositories
 
@@ -863,18 +1011,23 @@ The following limitations are visible in the current codebase:
 - **Static analysis only.** RepoStory does not execute source code, resolve
   every dynamic import, observe runtime traffic, inspect deployed resources, or
   prove that an inferred route is reachable or protected.
+- **Optional AI interpretation only.** Groq does not inspect the repository
+  independently. It receives the bounded deterministic result, can be
+  unavailable or rate-limited, and cannot turn missing static evidence into a
+  verified runtime claim.
 - **Pattern coverage is intentionally narrow.** Technology detection and
   framework-specific route detection cover the implemented signatures, not all
   languages, frameworks, package managers, or runtime conventions.
-- **Synchronous request lifecycle.** `AnalysisJob` models states such as
-  `pending` and `running`, but the current pipeline completes work in the
-  request. There are no background workers or resumable jobs.
-- **Process-local persistence.** Analyses and edited diagrams disappear when
-  the process restarts, expire after the TTL, or are evicted at capacity. There
-  is no durable database, cache, or cross-worker store.
-- **No ownership or collaboration boundary.** The application has no user
-  authentication, analysis ownership, sharing permissions, collaboration, or
-  billing.
+- **Single-process async execution.** The request lifecycle is asynchronous and
+  supports progress, bounded concurrency, retries, cancellation, deduplication,
+  TTLs, and local restart persistence. It is not a distributed worker queue and
+  does not provide cross-process locking or horizontal job coordination.
+- **Local JSON persistence.** The default adapter persists redacted state to a
+  local JSON file. It can be lost, corrupted, or unavailable like any local
+  filesystem and is not a substitute for a production database.
+- **Anonymous ownership only.** The app uses an opaque session cookie for job and
+  result scoping, not user authentication, private GitHub authorization,
+  sharing permissions, collaboration, or billing.
 - **Generated elements only.** The editor can change generated nodes and edges
   but cannot create arbitrary diagram elements.
 - **Text exports only.** Mermaid and Markdown are implemented. PDF, PNG, and
@@ -902,13 +1055,14 @@ steps; the latter are not promises or implemented features.
 
 | Status | Scope |
 | --- | --- |
-| **Completed** | Bounded public GitHub/fixture ingestion, deterministic findings, evidence and confidence data, conditional diagrams, React Flow editing, Mermaid/Markdown serialization, redaction safeguards, and offline fixture tests. |
-| **In progress** | No in-progress work can be verified from the committed repository. |
-| **Planned / possible** | Durable persistence, user/session ownership, private-repository OAuth, background analysis workers, broader language/framework detection, runtime-aware workflow analysis, and additional export formats such as SVG, PNG, or PDF. |
+| **Completed** | Bounded public GitHub/fixture ingestion, deterministic findings, evidence and confidence data, conditional diagrams, React Flow editing, Mermaid/Markdown serialization, redaction safeguards, asynchronous local jobs, bounded polling, cancellation/retry controls, anonymous ownership scoping, local JSON persistence, and offline fixture tests. |
+| **In progress** | Production-grade distributed job execution, authenticated ownership, and broader coverage remain outside this local adapter. |
+| **Planned / possible** | Database-backed job storage, distributed workers/queues, private-repository OAuth, broader language/framework detection, runtime-aware workflow analysis, and additional export formats such as SVG, PNG, or PDF. |
 | **Deferred** | Collaboration, sharing permissions, billing, visual regression infrastructure, and deployment hardening beyond the committed Dockerfile. |
 
-The domain model already carries future-looking job states, but that should not
-be read as evidence that asynchronous workers are implemented.
+The current implementation deliberately stops at a replaceable single-process
+repository boundary; adding Redis, a queue, or a cloud database requires a
+separate architecture and deployment decision.
 
 ## Contributing
 

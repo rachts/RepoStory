@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { POST as analyzePost } from "@/app/api/analyze/route";
+import { GET as jobGet } from "@/app/api/analyze/jobs/[jobId]/route";
 import { POST as exportPost } from "@/app/api/exports/route";
 import { GET as healthGet } from "@/app/api/health/route";
+import { analysisJobRunner } from "@/composition/container";
 import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
 import { evidenceFor } from "@/analysis/evidence";
 import { filterFiles } from "@/analysis/filter-files";
@@ -99,6 +101,31 @@ describe("security and API boundaries", () => {
     }));
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({ error: { code: "INVALID_BRANCH", retryable: false } });
+  });
+
+  it("accepts a valid analysis request as an opaque asynchronous job", async () => {
+    const enqueue = vi.spyOn(analysisJobRunner, "enqueue").mockImplementation(() => undefined);
+    const headers = { "content-type": "application/json", "x-repo-story-session": "test-session-route-001" };
+    const response = await analyzePost(new Request("http://localhost/api/analyze", {
+      method: "POST",
+      body: JSON.stringify({ repositoryUrl: "https://github.com/acme/async-route", explanationRequested: false }),
+      headers,
+    }));
+
+    expect(response.status).toBe(202);
+    const payload = await response.json() as { jobId: string; analysisId: string | null; status: string; statusUrl: string; deduplicated: boolean };
+    expect(payload).toMatchObject({ status: "queued", analysisId: null, deduplicated: false });
+    expect(payload.jobId).toMatch(/^job-/);
+    expect(payload.statusUrl).toContain(`/api/analyze/jobs/${payload.jobId}`);
+    expect(response.headers.get("location")).toBe(payload.statusUrl);
+
+    const statusResponse = await jobGet(new Request("http://localhost/api/analyze/jobs", { headers: { "x-repo-story-session": "test-session-route-001" } }), { params: Promise.resolve({ jobId: payload.jobId }) });
+    expect(statusResponse.status).toBe(200);
+    await expect(statusResponse.json()).resolves.toMatchObject({ jobId: payload.jobId, status: "queued" });
+
+    const otherSession = await jobGet(new Request("http://localhost/api/analyze/jobs", { headers: { "x-repo-story-session": "test-session-route-002" } }), { params: Promise.resolve({ jobId: payload.jobId }) });
+    expect(otherSession.status).toBe(404);
+    enqueue.mockRestore();
   });
 
   it("escapes Mermaid labels and keeps the requested direction", () => {
