@@ -134,7 +134,7 @@ the analyzed application or prove runtime behavior.
 | Undo, redo, reset, and save | Keeps a browser draft history, persists valid edits through the diagram API, and restores the generated baseline. | **Available** through the local result repository. |
 | Mermaid export | Returns Mermaid flowchart source containing only visible nodes and valid visible edges. | **Available** through the UI and `POST /api/exports`. |
 | README Markdown export | Returns Markdown with a Mermaid block, components, connections, confidence, optional explanations, optional evidence, and optional attribution. | **Available**; the browser copies content to the clipboard rather than downloading a file. |
-| Asynchronous analysis jobs | Accepts a job with HTTP `202`, reports progress, supports bounded polling, cancellation, retries, deduplication, TTLs, and local persistence. | **Available** through the single-process runner; not a distributed queue. |
+| Asynchronous analysis jobs | Accepts a job with HTTP `202`, reports progress, supports bounded polling, cancellation, retries, deduplication, TTLs, and configured persistence. | **Available** through the in-process runner; not a distributed queue. |
 | Offline fixture tests | Exercises analysis and security behavior without GitHub network access. | **Available** through `make test`. |
 
 ## How RepoStory works
@@ -198,10 +198,10 @@ storage/worker semantics.
 ## Architecture
 
 The following diagram reflects the current source layout and request paths. It
-shows the local asynchronous runner and JSON repository, but deliberately does
-not imply a distributed queue, database, or user-authentication service. The
-optional Groq provider is server-side and only receives completed, sanitized
-analysis summaries.
+shows the in-process asynchronous runner and replaceable job repository, but
+deliberately does not imply a distributed worker queue or user-authentication
+service. The optional Groq provider is server-side and only receives completed,
+sanitized analysis summaries.
 
 ```mermaid
 flowchart LR
@@ -218,8 +218,8 @@ flowchart LR
   generators["Diagram generators"]
   explain["POST /api/explain<br/>server-side Groq client"]
   groq["Groq structured output API"]
-  store["FileAnalysisJobRepository<br/>atomic local JSON + TTL"]
-  memory["InMemoryAnalysisStore<br/>test adapter and diagrams"]
+  store["Configured job repository<br/>Supabase, file, or memory"]
+  memory["InMemoryAnalysisStore<br/>test adapter"]
   reads["Analysis read routes<br/>/api/analyze/:id"]
   diagramApi["Diagram routes<br/>GET, PATCH, reset"]
   flow["React Flow results<br/>preview and editor"]
@@ -232,6 +232,7 @@ flowchart LR
   jobs --> parser
   browser --> status
   status --> jobs
+  parser --> provider
   provider --> github
   provider --> filter
   filter --> analyzers
@@ -263,24 +264,27 @@ src/
 ├── components/RepoAnalysis.tsx          # React Flow workspace and editor
 ├── analysis/                            # static detectors, diagrams, exports
 ├── application/
-│   ├── pipeline.ts                       # deterministic bounded analysis orchestration
-│   ├── jobs/                             # durable job contract, identity, and runner
-│   ├── store.ts                          # in-memory result/test adapter
-│   └── diagram-edits.ts                  # validated edit transformation
-├── composition/container.ts              # runtime provider/store wiring
-├── domain/                               # analysis, finding, diagram, export types
-├── infrastructure/ai/groq-client.ts      # server-only optional explanation client
-├── infrastructure/jobs/                   # local atomic JSON job repository
-├── infrastructure/providers/             # GitHub and fixture repository providers
-└── shared/                               # limits, redaction, HTTP, text, IDs
+│   ├── pipeline.ts                        # deterministic bounded analysis orchestration
+│   ├── jobs/                              # durable job contract, identity, and runner
+│   ├── store.ts                           # in-memory result/test adapter
+│   └── diagram-edits.ts                   # validated edit transformation
+├── composition/container.ts               # runtime provider/store wiring
+├── domain/                                # analysis, finding, diagram, export types
+├── infrastructure/ai/groq-client.ts       # server-only optional explanation client
+├── infrastructure/jobs/                  # Supabase, file, and memory adapters
+├── infrastructure/providers/              # GitHub and fixture repository providers
+└── shared/                                # limits, redaction, HTTP, text, IDs
 
 fixtures/repositories/                    # offline repository snapshots
 tests/                                     # unit, component, and Playwright tests
 ```
 
 The runtime composition in `src/composition/container.ts` wires the GitHub
-provider to the `InMemoryAnalysisStore`. `FixtureRepositoryProvider` is imported
-by tests and is not the production provider selected by the web application.
+provider to the configured job repository. Supabase is used when explicitly
+selected or when its server credentials are present; the file adapter is the
+local default, and memory mode is intended for tests or explicitly ephemeral
+use. `FixtureRepositoryProvider` is imported by tests and is not the production
+provider selected by the web application.
 
 ## Analysis stages
 
@@ -303,7 +307,7 @@ by tests and is not the production provider selected by the web application.
 | Confidence assignment | Preserve direct, inferred, and unresolved states. | Confidence on findings, nodes, edges, and availability. | Deterministic heuristic. |
 | Diagram generation | Build repository, system, API, and authentication diagrams only when their evidence conditions are met. | `Diagram` objects and availability reasons. | Deterministic and conditional. |
 | Optional AI explanation | Summarize a completed deterministic result from a bounded, sanitized payload. | Validated `ProjectExplanation` or structured unavailable/error state. | Server-side Groq request; never required for analysis. |
-| Editing and persistence | Validate edits, preserve evidence, and store the edited diagram. | Updated diagram in the in-memory store. | Synchronous and process-local. |
+| Editing and persistence | Validate edits, preserve evidence, and store the edited diagram. | Updated diagram in the configured job/result repository. | Server-side persistence with local file, Supabase, or memory adapters. |
 | Export generation | Serialize visible diagram content to Mermaid or Markdown. | JSON export response with content, filename, and MIME type. | Deterministic. |
 
 ## Evidence and confidence model
@@ -535,18 +539,19 @@ authentication system.
 
 ### Store and trust boundary
 
-The default job store is the Supabase-backed `SupabaseAnalysisJobRepository`
-when `SUPABASE_URL` and `SUPABASE_SECRET_KEY` are configured. Apply
-`supabase/migrations/001_repo_story.sql` before enabling it with
-`REPO_STORY_JOB_STORE=supabase`. The file-backed
-`FileAnalysisJobRepository` remains available for local single-process use;
-the `memory` mode is intended for tests or explicitly ephemeral use.
+The job store is selected from the following adapters:
 
-The current application does not provide user authentication, private GitHub
-OAuth, per-user authorization, analysis ownership, or cross-worker persistence.
-Treat the current deployment shape as local or trusted single-user use. A
-public multi-user deployment requires a session/ownership boundary and durable
-storage before it should be exposed as a shared service.
+- `supabase`: persistent REST-backed storage for multi-instance deployments;
+- `file`: atomic local JSON persistence for one long-running process or container;
+- `memory`: ephemeral in-memory storage for tests and explicitly temporary use.
+
+Supabase is selected when `REPO_STORY_JOB_STORE=supabase` or when
+`SUPABASE_URL`/`SUPABASE_SECRET_KEY` are configured outside tests. Apply
+`supabase/migrations/001_repo_story.sql` before enabling it. The browser uses an
+anonymous opaque session cookie for job and result scoping. This is an ownership
+boundary, not authentication or private-repository authorization; authenticated
+multi-user deployments still need an identity provider and stronger access
+controls.
 
 ## Quickstart
 
@@ -588,6 +593,12 @@ global package installation.
 | `SUPABASE_SECRET_KEY` | For Supabase | Server-only Supabase Secret key used by the REST adapter. | Empty. |
 | `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the local result store. | `100`. |
 | `REPO_STORY_ANALYSIS_TTL_MS` | No | Store entry TTL in milliseconds. | `3600000` (one hour). |
+| `REPO_STORY_JOB_TTL_MS` | No | Job and result expiration window in milliseconds. | `3600000`. |
+| `REPO_STORY_MAX_CONCURRENT_JOBS` | No | Maximum analyses started concurrently by one process. | `2`. |
+| `REPO_STORY_MAX_JOB_RETRIES` | No | Maximum automatic/manual retries for retryable failures. | `2`. |
+| `REPO_STORY_JOB_RETRY_BACKOFF_MS` | No | Base retry backoff in milliseconds. | `250`. |
+| `REPO_STORY_ANALYZER_VERSION` | No | Cache-key version for deterministic analyzer changes. | `phase-async-1`. |
+| `REPO_STORY_CONFIG_VERSION` | No | Cache-key version for configuration changes. | `1`. |
 | `GROQ_API_KEY` | No | Server-only key for the optional project explanation layer. | Empty; explanations are unavailable. |
 | `GROQ_MODEL` | No | Groq model used for structured explanations. | `openai/gpt-oss-120b`. |
 | `GROQ_TIMEOUT_MS` | No | Maximum time allowed for one explanation request. | `30000`. |
@@ -689,30 +700,44 @@ Request body:
 ```json
 {
   "repositoryUrl": "https://github.com/owner/repository",
-  "branch": "feature/diagram-audit"
+  "branch": "feature/diagram-audit",
+  "explanationRequested": false
 }
 ```
 
 `repositoryUrl` is required, trimmed, and limited to 500 characters. `branch`
-is optional and limited to 255 characters. The request object is strict, so
-unknown body fields are rejected.
+and `explanationRequested` are optional. `branch` is limited to 255 characters.
+The request object is strict, so unknown body fields are rejected.
 
-Successful response:
+Successful response (`202 Accepted`):
 
 ```json
 {
-  "analysisId": "analysis-123e4567-e89b-12d3-a456-426614174000",
-  "status": "completed"
+  "jobId": "job-123e4567-e89b-12d3-a456-426614174000",
+  "analysisId": null,
+  "status": "queued",
+  "stage": "validating-input",
+  "progress": 0,
+  "statusUrl": "/api/analyze/jobs/job-123e4567-e89b-12d3-a456-426614174000",
+  "resultUrl": null,
+  "deduplicated": false
 }
 ```
+
+The response also includes a `Location` header pointing to the job status URL.
+Requests with the same normalized repository, branch, analyzer version, and
+configuration version reuse an active or unexpired completed job for the same
+anonymous session and return `deduplicated: true`.
 
 Relevant errors include:
 
 | Status | Codes or condition |
 | ---: | --- |
 | `400` | `INVALID_REQUEST`, `INVALID_URL`, or `UNSUPPORTED_HOST`. |
-| `404` | `REPOSITORY_NOT_FOUND`. |
-| `500` | Repository access failures, GitHub rate limits, invalid/truncated/oversized responses, invalid content, analysis timeout, or other analysis failures. |
+| `404` | `REPOSITORY_NOT_FOUND` when the upstream repository cannot be found. |
+| `413` | Request, repository, tree, or content size limits are exceeded. |
+| `429` | GitHub rate limiting or local analysis capacity limits. |
+| `502` / `504` | Upstream GitHub failures or analysis timeout. |
 
 The error body has the shape:
 
@@ -726,15 +751,29 @@ The error body has the shape:
 }
 ```
 
-### `GET /api/analysis/:analysisId`
+### `GET /api/analyze/jobs/:jobId`
 
-Returns the stored `AnalysisJob` and its current diagrams.
+Returns redacted job status and progress for the anonymous session that created
+the job. Terminal statuses are `completed`, `failed`, `cancelled`, and
+`expired`. The response can include coverage, a retryable error, and a result
+URL once an `analysisId` exists.
 
-The response includes repository metadata, status and stage, progress, file
-counts, technology findings, general findings, optional `apiRoutes`,
+### `POST /api/analyze/jobs/:jobId/cancel`
+
+Requests cancellation of a queued or running job. A cancelled job cannot later
+persist a completed result.
+
+### `POST /api/analyze/jobs/:jobId/retry`
+
+Requeues a retryable failed job until `REPO_STORY_MAX_JOB_RETRIES` is reached.
+
+### `GET /api/analyze/:analysisId`
+
+Returns a completed deterministic analysis and its current diagrams. The
+response includes repository metadata, status and stage, progress, file counts,
+technology findings, general findings, optional `apiRoutes`,
 `moduleRelationships`, `databases`, `externalIntegrations`, and
-`authentication` collections, `diagramAvailability`, `diagramIds`, timestamps,
-and:
+`authentication` collections, `diagramAvailability`, coverage, timestamps, and:
 
 ```json
 {
@@ -755,8 +794,14 @@ and:
 }
 ```
 
-If the ID has expired, been evicted, or never existed, the route returns `404`
-with `ANALYSIS_NOT_FOUND`.
+An incomplete result returns `409`. An expired result returns `410` with
+`ANALYSIS_EXPIRED`; an unknown or inaccessible ID returns `404` with
+`ANALYSIS_NOT_FOUND`.
+
+### `GET /api/analysis/:analysisId`
+
+Legacy-compatible result route for existing links. New clients should use
+`GET /api/analyze/:analysisId`.
 
 ### `POST /api/explain`
 
@@ -765,7 +810,8 @@ analysis. The browser sends only the opaque analysis ID:
 
 ```json
 {
-  "analysisId": "analysis-123e4567-e89b-12d3-a456-426614174000"
+  "analysisId": "analysis-123e4567-e89b-12d3-a456-426614174000",
+  "force": false
 }
 ```
 
@@ -815,11 +861,14 @@ The server rejects IDs that were not supplied by deterministic analysis. Empty
 sections are intentional: the model must not invent generic architecture when the
 repository does not provide enough evidence.
 
-`404 ANALYSIS_NOT_FOUND` means the process-local analysis expired or was
-evicted. `409 AI_NOT_READY` means deterministic analysis is not complete.
-`503 AI_NOT_CONFIGURED` or `AI_DISABLED` means the optional layer is unavailable.
-Timeouts, rate limits, upstream failures, invalid structured output, and
-invented evidence references return retryable structured errors.
+Successful explanations are persisted with the analysis and returned from later
+requests unless `force: true` is supplied. `404 ANALYSIS_NOT_FOUND` means the
+analysis does not exist for the current session. `409 AI_NOT_READY` means the
+deterministic analysis is not complete. `503 AI_NOT_CONFIGURED`, `AI_DISABLED`,
+`AI_AUTH_FAILED`, `AI_PERMISSION_DENIED`, or `AI_MODEL_UNAVAILABLE` means the
+server-side AI configuration cannot currently be used. Timeouts, rate limits,
+upstream failures, invalid structured output, and invented evidence references
+return retryable structured errors.
 
 ### `GET /api/analysis/:analysisId/diagrams`
 
@@ -890,7 +939,7 @@ Unknown node or edge IDs and malformed bodies return `400` with
 
 ### `POST /api/diagrams/:diagramId/reset`
 
-Restores the original generated baseline retained by the in-memory store. The
+Restores the original generated baseline retained by the configured repository. The
 request has no body. A valid response includes `{ "diagram": { "id": "diagram-123e4567-e89b-12d3-a456-426614174000", "title": "Repository structure" } }`; an unknown
 ID returns `404` with `DIAGRAM_NOT_FOUND`.
 
@@ -963,6 +1012,9 @@ GitHub token or live GitHub access.
 - **AI explanation tests** validate bounded/redacted input, strict Zod output,
   mocked Groq success and failure mapping, missing/incomplete analysis behavior,
   and rejection of invented evidence IDs. They never call the real Groq API.
+- **Async job tests** cover job creation, deduplication, fixture completion,
+  cancellation-safe result persistence, ownership scoping, and retry lifecycle
+  behavior without calling GitHub or Groq.
 - **Component tests** use Testing Library with jsdom to exercise landing-page
   URL validation and the results workspace: diagram navigation, unavailable
   diagram reasons, save-before-export, progress feedback, stale-draft
@@ -1026,13 +1078,15 @@ The following limitations are visible in the current codebase:
 - **Pattern coverage is intentionally narrow.** Technology detection and
   framework-specific route detection cover the implemented signatures, not all
   languages, frameworks, package managers, or runtime conventions.
-- **Single-process async execution.** The request lifecycle is asynchronous and
+- **In-process async execution.** The request lifecycle is asynchronous and
   supports progress, bounded concurrency, retries, cancellation, deduplication,
-  TTLs, and local restart persistence. It is not a distributed worker queue and
-  does not provide cross-process locking or horizontal job coordination.
-- **Local JSON persistence.** The default adapter persists redacted state to a
-  local JSON file. It can be lost, corrupted, or unavailable like any local
-  filesystem and is not a substitute for a production database.
+  and TTLs. The runner still executes inside the web process; it is not a
+  durable distributed worker queue and does not provide cross-process job
+  claiming or horizontal execution coordination.
+- **Adapter-dependent persistence.** Supabase provides a persistent REST-backed
+  job/result store for multi-instance deployments. File storage is limited to a
+  single long-running process or container with a persistent writable volume;
+  memory storage is ephemeral.
 - **Anonymous ownership only.** The app uses an opaque session cookie for job and
   result scoping, not user authentication, private GitHub authorization,
   sharing permissions, collaboration, or billing.
@@ -1063,14 +1117,14 @@ steps; the latter are not promises or implemented features.
 
 | Status | Scope |
 | --- | --- |
-| **Completed** | Bounded public GitHub/fixture ingestion, deterministic findings, evidence and confidence data, conditional diagrams, React Flow editing, Mermaid/Markdown serialization, redaction safeguards, asynchronous local jobs, bounded polling, cancellation/retry controls, anonymous ownership scoping, local JSON persistence, and offline fixture tests. |
-| **In progress** | Production-grade distributed job execution, authenticated ownership, and broader coverage remain outside this local adapter. |
-| **Planned / possible** | Database-backed job storage, distributed workers/queues, private-repository OAuth, broader language/framework detection, runtime-aware workflow analysis, and additional export formats such as SVG, PNG, or PDF. |
+| **Completed** | Bounded public GitHub/fixture ingestion, deterministic findings, evidence and confidence data, conditional diagrams, React Flow editing, Mermaid/Markdown serialization, redaction safeguards, asynchronous jobs, Supabase/file/memory persistence adapters, bounded polling, cancellation/retry controls, anonymous ownership scoping, and offline fixture tests. |
+| **In progress** | Production-grade distributed job execution, authenticated ownership, and broader coverage remain outside the current web-process runner. |
+| **Planned / possible** | Durable worker/queue execution, private-repository OAuth, broader language/framework detection, runtime-aware workflow analysis, and additional export formats such as SVG, PNG, or PDF. |
 | **Deferred** | Collaboration, sharing permissions, billing, visual regression infrastructure, and deployment hardening beyond the committed Dockerfile. |
 
-The current implementation deliberately stops at a replaceable single-process
-repository boundary; adding Redis, a queue, or a cloud database requires a
-separate architecture and deployment decision.
+The current implementation deliberately separates persistence from execution:
+Supabase can persist jobs across instances, but a separate worker/queue is still
+needed for resilient multi-instance execution.
 
 ## Contributing
 
