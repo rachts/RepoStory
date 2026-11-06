@@ -1,7 +1,18 @@
-.PHONY: test lint typecheck build
+.PHONY: test unit integration e2e worker lint typecheck build
 
-test:
-	npm test -- --run
+test: unit integration
+
+unit:
+	npm run test:unit
+
+integration:
+	npm run test:integration
+
+e2e:
+	npm run test:e2e
+
+worker:
+	npm run worker
 
 lint:
 	npm run lint
