@@ -2,7 +2,12 @@ import { z } from "zod";
 import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
-import { ownerIdFromRequest, analysisCacheKey, sessionCookieHeader } from "@/application/jobs/job-identity";
+import {
+  resolveRequestIdentity,
+  checkDailyQuota,
+  analysisCacheKey,
+  sessionCookieHeader,
+} from "@/application/jobs/job-identity";
 import { opaqueId, nowIso } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
@@ -17,6 +22,32 @@ const requestSchema = z.object({
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const identityResult = await resolveRequestIdentity(request, analysisRepository);
+    if (!identityResult.ok) {
+      return jsonResponse({ error: { code: identityResult.error.code, message: identityResult.error.message, retryable: false } }, { status: 401 });
+    }
+    const { ownerId, setCookie } = identityResult.value;
+
+    const quota = await checkDailyQuota(ownerId, analysisRepository);
+    if (!quota.allowed) {
+      return jsonResponse(
+        {
+          error: {
+            code: "QUOTA_EXCEEDED",
+            message: `Daily analysis quota exceeded (${quota.limit} per day). Please retry after the quota resets.`,
+            retryable: true,
+            details: { quota: quota.limit, resetAt: quota.resetAt },
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(quota.retryAfterSeconds),
+          },
+        },
+      );
+    }
+
     const body = await readJsonBody(request, MAX_REQUEST_BYTES);
     const input = requestSchema.parse(body);
     const parsed = parseGitHubUrl(input.repositoryUrl);
@@ -26,7 +57,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       if (!branch.ok) return errorResponse(branch.error);
     }
     const reference = { ...parsed.value, ...(input.branch ? { branch: input.branch } : {}) };
-    const { ownerId, setCookie } = ownerIdFromRequest(request);
     const cacheKey = analysisCacheKey(reference);
     await analysisRepository.markExpiredJobs();
     const created = await analysisRepository.createOrReuseJob({
