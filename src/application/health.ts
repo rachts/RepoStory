@@ -53,7 +53,7 @@ export async function checkReadiness(overrides?: {
   } else {
     try {
       const ping = await analysisRepository.getJob("non-existent-probe-id");
-      database = ping === null || ping !== undefined;
+      database = ping === null || ping === undefined || typeof ping === "object";
     } catch (e) {
       errors.database = String(e);
     }
