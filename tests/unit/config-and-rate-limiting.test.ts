@@ -1,0 +1,99 @@
+import { describe, expect, it } from "vitest";
+import { validateEnv } from "@/config/env";
+import { InMemoryRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
+import { POST as analyzePost } from "@/app/api/analyze/route";
+
+describe("Workstream 8: Configuration validation and inbound rate limiting", () => {
+  describe("Config validation fail-fast", () => {
+    it("fails fast in production when SUPABASE credentials and in-memory bypass are missing, listing missing variables clearly", () => {
+      const prodEnv: Record<string, string | undefined> = {
+        NODE_ENV: "production",
+        // SUPABASE_URL and SUPABASE_SECRET_KEY missing
+        // NEXTAUTH_SECRET missing
+      };
+
+      const result = validateEnv(prodEnv);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain("[RepoStory Config Error] Missing or invalid configuration variables:");
+        expect(result.error).toContain("SUPABASE_URL");
+        expect(result.error).toContain("NEXTAUTH_SECRET");
+      }
+    });
+
+    it("passes validation in production when required credentials are provided", () => {
+      const validProdEnv: Record<string, string | undefined> = {
+        NODE_ENV: "production",
+        SUPABASE_URL: "https://example.supabase.co",
+        SUPABASE_SECRET_KEY: "secret-key-xyz",
+        NEXTAUTH_SECRET: "long-secure-random-nextauth-secret-string",
+      };
+
+      const result = validateEnv(validProdEnv);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.env.NODE_ENV).toBe("production");
+        expect(result.env.SUPABASE_URL).toBe("https://example.supabase.co");
+      }
+    });
+
+    it("passes validation in production when explicitly bypassing in-memory queue & store", () => {
+      const bypassEnv: Record<string, string | undefined> = {
+        NODE_ENV: "production",
+        ALLOW_IN_MEMORY_STORE: "true",
+        ALLOW_IN_MEMORY_QUEUE: "true",
+        NEXTAUTH_SECRET: "long-secure-random-nextauth-secret-string",
+      };
+
+      const result = validateEnv(bypassEnv);
+      expect(result.ok).toBe(true);
+    });
+
+    it("provides safe defaults in development mode", () => {
+      const devEnv: Record<string, string | undefined> = {
+        NODE_ENV: "development",
+      };
+
+      const result = validateEnv(devEnv);
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.env.REPO_STORY_MAX_ANALYSES).toBe(100);
+        expect(result.env.ANALYSIS_DAILY_QUOTA).toBe(5);
+        expect(result.env.GROQ_MODEL).toBe("openai/gpt-oss-120b");
+      }
+    });
+  });
+
+  describe("Inbound rate limiting (10 requests per minute)", () => {
+    it("allows 10 requests per minute and blocks the 11th request with Retry-After", async () => {
+      const limiter = new InMemoryRateLimiter({ maxRequests: 10, windowMs: 60_000 });
+      const testIdentifier = "test-client-ip-123";
+
+      for (let i = 0; i < 10; i++) {
+        const check = await limiter.limit(testIdentifier);
+        expect(check.success).toBe(true);
+        expect(check.remaining).toBe(10 - (i + 1));
+      }
+
+      // 11th request: rejected!
+      const blocked = await limiter.limit(testIdentifier);
+      expect(blocked.success).toBe(false);
+      expect(blocked.remaining).toBe(0);
+      expect(blocked.resetAt).toBeGreaterThan(Date.now());
+    });
+
+    it("isolates rate limit buckets between different users / IPs", async () => {
+      const limiter = new InMemoryRateLimiter({ maxRequests: 2, windowMs: 60_000 });
+
+      // User A exhausts their limit
+      await limiter.limit("user:alice");
+      await limiter.limit("user:alice");
+      const aliceBlocked = await limiter.limit("user:alice");
+      expect(aliceBlocked.success).toBe(false);
+
+      // User B is unaffected
+      const bobCheck = await limiter.limit("user:bob");
+      expect(bobCheck.success).toBe(true);
+    });
+  });
+});

@@ -8,6 +8,7 @@ import {
   analysisCacheKey,
   sessionCookieHeader,
 } from "@/application/jobs/job-identity";
+import { getInboundRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
 import { opaqueId, nowIso } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
@@ -26,7 +27,29 @@ export async function POST(request: Request): Promise<NextResponse> {
     if (!identityResult.ok) {
       return jsonResponse({ error: { code: identityResult.error.code, message: identityResult.error.message, retryable: false } }, { status: 401 });
     }
-    const { ownerId, setCookie } = identityResult.value;
+    const { ownerId, setCookie, isAuthenticated } = identityResult.value;
+
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "127.0.0.1";
+    const rateLimitIdentifier = isAuthenticated ? `user:${ownerId}` : `ip:${ip}`;
+    const rateLimit = await getInboundRateLimiter().limit(rateLimitIdentifier);
+    if (!rateLimit.success) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((rateLimit.resetAt - Date.now()) / 1000));
+      return jsonResponse(
+        {
+          error: {
+            code: "RATE_LIMITED",
+            message: "Inbound rate limit exceeded. Max 10 requests per minute.",
+            retryable: true,
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(retryAfterSeconds),
+          },
+        },
+      );
+    }
 
     const quota = await checkDailyQuota(ownerId, analysisRepository);
     if (!quota.allowed) {
