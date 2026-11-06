@@ -13,6 +13,11 @@ import { InMemoryCacheStore } from "@/infrastructure/cache/in-memory-cache-store
 import { decodeFileBuffer, detectCaseCollisions, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
 import type { AnalysisCoverage } from "@/domain/analysis";
 import { repostoryGitHubRequestsTotal, repostoryGitHubRateLimitErrorsTotal } from "@/shared/metrics";
+import { Octokit } from "@octokit/rest";
+import { throttling } from "@octokit/plugin-throttling";
+import { retry } from "@octokit/plugin-retry";
+
+export const ResilientOctokit = Octokit.plugin(throttling, retry);
 
 export interface GitHubProviderOptions {
   token?: string;
@@ -261,6 +266,7 @@ function decodeGitHubContent(encoded: string, maxBytes: number): JsonResult<{ co
 }
 
 export class GitHubPublicRepositoryProvider implements RepositoryProvider {
+  public readonly octokit: InstanceType<typeof ResilientOctokit>;
   private readonly fetchImpl: typeof fetch;
   private readonly limits: AnalysisLimits;
   public readonly tokenPool: GitHubTokenPool;
@@ -273,6 +279,32 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     this.tokenPool = options.tokenPool ?? new GitHubTokenPool(options.tokens || options.token);
     this.circuitBreaker = options.circuitBreaker ?? new GitHubCircuitBreaker();
     this.cacheStore = options.cacheStore ?? new InMemoryCacheStore();
+
+    const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const mergedInit: RequestInit = {
+        ...init,
+        redirect: "error",
+        cache: "no-store",
+      };
+      return this.fetchImpl(input, mergedInit);
+    };
+
+    const isTest = process.env.NODE_ENV === "test";
+
+    this.octokit = new ResilientOctokit({
+      request: {
+        fetch: safeFetch,
+      },
+      throttle: {
+        enabled: !isTest,
+        onRateLimit: () => false,
+        onSecondaryRateLimit: () => false,
+      },
+      retry: {
+        retries: 0,
+        doNotRetry: ["400", "401", "403", "404", "422", "429", "500", "502", "503", "504"],
+      },
+    });
   }
 
   private async dispatch(url: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget): Promise<Response> {
@@ -284,21 +316,59 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       budget?.check();
       this.circuitBreaker.check();
 
-      const token = this.tokenPool.getBestToken();
-      const headers = new Headers(fetchOptions.headers);
-      headers.set("Accept", "application/vnd.github+json");
-      if (token) {
-        headers.set("Authorization", `Bearer ${token}`);
+      // Ensure the URL is valid and targets api.github.com
+      if (url.hostname.toLowerCase() !== "api.github.com" || !url.pathname.startsWith("/repos/")) {
+        throw new AppError({
+          code: "REPOSITORY_INACCESSIBLE",
+          message: "GitHub URL must target api.github.com/repos/.",
+          retryable: false,
+        });
       }
 
-      const requestInit: RequestInit = {
-        ...fetchOptions,
-        headers,
-        redirect: "error",
-        cache: "no-store",
+      const token = this.tokenPool.getBestToken();
+      const headers: Record<string, string> = {
+        accept: "application/vnd.github+json",
       };
+      if (fetchOptions.headers) {
+        new Headers(fetchOptions.headers).forEach((val, key) => {
+          headers[key] = val;
+        });
+      }
+      if (token) {
+        headers["authorization"] = `Bearer ${token}`;
+      }
 
-      const response = await this.fetchImpl(url.toString(), requestInit);
+      let octokitStatus: number;
+      let octokitHeaders: Record<string, string>;
+      let octokitBody: string;
+
+      try {
+        const octokitResult = await this.octokit.request(`GET ${url.toString()}`, {
+          headers,
+          request: {
+            signal: fetchOptions.signal,
+            redirect: "error",
+          },
+        });
+        octokitStatus = octokitResult.status;
+        octokitHeaders = octokitResult.headers as Record<string, string>;
+        octokitBody = typeof octokitResult.data === "string" ? octokitResult.data : JSON.stringify(octokitResult.data);
+      } catch (error: any) {
+        if (error && typeof error === "object" && "status" in error && error.response) {
+          octokitStatus = Number(error.status);
+          octokitHeaders = (error.response.headers ?? {}) as Record<string, string>;
+          octokitBody = typeof error.response.data === "string" ? error.response.data : JSON.stringify(error.response.data ?? {});
+        } else {
+          throw error;
+        }
+      }
+
+      const responseHeaders = new Headers(octokitHeaders);
+      const response = new Response(octokitBody, {
+        status: octokitStatus,
+        headers: responseHeaders,
+      });
+
       repostoryGitHubRequestsTotal.inc({ endpoint: stage, status: String(response.status) });
 
       this.tokenPool.updateRateLimit(
