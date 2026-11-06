@@ -1,6 +1,6 @@
 import type { JobQueue, JobQueueError, JobQueueItem, JobQueueOptions } from "@/application/jobs/job-queue";
 import { AppError } from "@/domain/errors";
-import { nowIso, opaqueId } from "@/shared/ids";
+import { opaqueId } from "@/shared/ids";
 
 export class InMemoryJobQueue implements JobQueue {
   private readonly items = new Map<string, JobQueueItem>();
@@ -75,6 +75,7 @@ export class InMemoryJobQueue implements JobQueue {
 
       candidates.sort((a, b) => new Date(a.availableAt).getTime() - new Date(b.availableAt).getTime());
       const chosen = candidates[0];
+      if (!chosen) return undefined;
 
       chosen.status = "running";
       chosen.workerId = workerId;

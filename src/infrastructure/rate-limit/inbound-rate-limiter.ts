@@ -1,3 +1,6 @@
+import { Ratelimit } from "@upstash/ratelimit";
+import { Redis } from "@upstash/redis";
+
 export interface RateLimitResult {
   success: boolean;
   limit: number;
@@ -63,9 +66,6 @@ export function getInboundRateLimiter(): InboundRateLimiter {
 
   if (redisUrl && redisToken) {
     try {
-      // Dynamic import or construction of Upstash Ratelimit
-      const { Ratelimit } = require("@upstash/ratelimit");
-      const { Redis } = require("@upstash/redis");
       const redis = new Redis({ url: redisUrl, token: redisToken });
       const ratelimit = new Ratelimit({
         redis,

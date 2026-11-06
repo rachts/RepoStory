@@ -10,6 +10,8 @@ import { GitHubCircuitBreaker } from "@/infrastructure/providers/github-circuit-
 import { buildSafeGitHubApiUrl } from "@/infrastructure/providers/github-url-builder";
 import type { CacheStore } from "@/application/cache/cache-store";
 import { InMemoryCacheStore } from "@/infrastructure/cache/in-memory-cache-store";
+import { decodeFileBuffer, detectCaseCollisions, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
+import type { AnalysisCoverage } from "@/domain/analysis";
 
 export interface GitHubProviderOptions {
   token?: string;
@@ -131,7 +133,9 @@ function candidatePriority(path: string): number {
 }
 
 function maxConcurrentRequests(limits: AnalysisLimits): number {
-  const value = limits.maxConcurrentContentRequests ?? DEFAULT_LIMITS.maxConcurrentContentRequests;
+  const envVal = Number(process.env.MAX_CONCURRENT_GITHUB_CONTENT_REQUESTS);
+  if (Number.isSafeInteger(envVal) && envVal > 0) return Math.min(envVal, 16);
+  const value = limits.maxConcurrentGitHubContentRequests ?? limits.maxConcurrentContentRequests ?? DEFAULT_LIMITS.maxConcurrentContentRequests;
   return Number.isSafeInteger(value) && value > 0 ? Math.min(value, 16) : DEFAULT_LIMITS.maxConcurrentContentRequests;
 }
 
@@ -229,7 +233,7 @@ function isStrictBase64(value: string): boolean {
   return true;
 }
 
-function decodeGitHubContent(encoded: string, maxBytes: number): JsonResult<string> {
+function decodeGitHubContent(encoded: string, maxBytes: number): JsonResult<{ content: string } | { skipped: true; reason: SkipReason }> {
   const compact = encoded.replace(/\s/g, "");
   if (!isStrictBase64(compact)) return err(invalidContent("GitHub file content was not valid base64."));
 
@@ -241,7 +245,15 @@ function decodeGitHubContent(encoded: string, maxBytes: number): JsonResult<stri
     const padded = compact.padEnd(Math.ceil(compact.length / 4) * 4, "=");
     const decoded = Buffer.from(padded, "base64");
     if (decoded.byteLength > maxBytes || decoded.byteLength !== expectedBytes) return err(contentTooLarge(maxBytes));
-    return ok(decoded.toString("utf8"));
+
+    const decodedFile = decodeFileBuffer(decoded, {
+      fetchLfs: process.env.FETCH_LFS === "true",
+      maxLfsBytes: Number(process.env.MAX_LFS_BYTES) || 5 * 1024 * 1024,
+    });
+    if (!decodedFile.ok) {
+      return ok({ skipped: true, reason: decodedFile.reason ?? "unsupported-encoding" });
+    }
+    return ok({ content: decodedFile.content ?? "" });
   } catch {
     return err(invalidContent("GitHub file content was not valid base64."));
   }
@@ -354,6 +366,18 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
 
+    const coverageDetails: Array<{ path: string; reason: SkipReason; details?: string }> = [];
+    const skippedByReason = {
+      tooLarge: 0,
+      unsupported: 0,
+      limitReached: 0,
+      lfsPointer: 0,
+      submodule: 0,
+      unsupportedEncoding: 0,
+      pathCollision: 0,
+    };
+    const warnings: string[] = [];
+
     try {
       budget?.check();
       const metaUrl = buildSafeGitHubApiUrl(reference.owner, reference.name);
@@ -395,9 +419,13 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         if (!Array.isArray(treePayload.tree)) return err(invalidResponse("tree"));
 
         const configuredMaxTreeEntries = this.limits.maxTreeEntries;
-        const maxTreeEntries = typeof configuredMaxTreeEntries === "number" && Number.isSafeInteger(configuredMaxTreeEntries) && configuredMaxTreeEntries >= 0 ? configuredMaxTreeEntries : DEFAULT_LIMITS.maxTreeEntries;
+        const ceiling = this.limits.maxTreeEntriesCeiling ?? (configuredMaxTreeEntries !== undefined && configuredMaxTreeEntries < 1000 ? configuredMaxTreeEntries : 100_000);
         budget?.check();
-        if (treePayload.tree.length > maxTreeEntries) return err(treeTooLarge(maxTreeEntries));
+        if (treePayload.tree.length > ceiling) return err(treeTooLarge(ceiling));
+
+        const effectiveMaxTreeEntries = typeof configuredMaxTreeEntries === "number" && configuredMaxTreeEntries < 1000
+          ? configuredMaxTreeEntries
+          : Math.min(ceiling, Math.max(this.limits.maxFiles ?? 2000, 10_000));
 
         treeEntries = [];
         for (const rawEntry of treePayload.tree) {
@@ -406,8 +434,25 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           if (rawEntry.size !== undefined && (typeof rawEntry.size !== "number" || !Number.isSafeInteger(rawEntry.size) || rawEntry.size < 0)) return err(invalidResponse("tree"));
           const pathResult = validateTreePath(rawEntry.path, pathLimit);
           if (!pathResult.ok) return pathResult;
+          const normalizedPath = normalizeRepositoryPath(pathResult.value);
+
+          // Submodule detection (mode 160000 or commit type)
+          if (rawEntry.mode === "160000" || rawEntry.type === "commit") {
+            coverageDetails.push({ path: normalizedPath, reason: "submodule" });
+            skippedByReason.submodule += 1;
+            continue;
+          }
+
+          if (rawEntry.type !== "blob") continue;
+
+          if (treeEntries.length >= effectiveMaxTreeEntries) {
+            coverageDetails.push({ path: normalizedPath, reason: "limit-reached" });
+            skippedByReason.limitReached += 1;
+            continue;
+          }
+
           treeEntries.push({
-            path: pathResult.value,
+            path: normalizedPath,
             type: rawEntry.type,
             mode: typeof rawEntry.mode === "string" ? rawEntry.mode : undefined,
             ...(rawEntry.size !== undefined ? { size: rawEntry.size } : {}),
@@ -421,10 +466,19 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       }
 
       budget?.check();
+      const { collisions, warnings: collisionWarnings, safePaths } = detectCaseCollisions(treeEntries.map((e) => e.path));
+      for (const col of collisions) {
+        coverageDetails.push({ path: col.path, reason: "path-collision" });
+        skippedByReason.pathCollision += 1;
+      }
+      warnings.push(...collisionWarnings);
+
       const candidateInputs: RepositoryFile[] = [];
       for (const entry of treeEntries) {
         budget?.check();
-        if (entry.type === "blob") candidateInputs.push({ path: entry.path, type: "file", sizeBytes: entry.size ?? 0, isAnalyzable: true });
+        if (entry.type === "blob" && safePaths.has(entry.path)) {
+          candidateInputs.push({ path: entry.path, type: "file", sizeBytes: entry.size ?? 0, isAnalyzable: true });
+        }
       }
       budget?.check();
       const candidates = filterFiles(candidateInputs, this.limits, budget)
@@ -442,7 +496,19 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           const item = candidates[index];
           if (!item) return ok(null);
           const itemSize = item.sizeBytes ?? 0;
-          if (itemSize > this.limits.maxContentBytes) continue;
+          if (itemSize > this.limits.maxContentBytes) {
+            coverageDetails.push({ path: item.path, reason: "too-large" });
+            skippedByReason.tooLarge += 1;
+            continue;
+          }
+
+          const mem = process.memoryUsage().heapUsed;
+          const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
+          if (mem > maxHeapBytes) {
+            coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Memory budget reached" });
+            skippedByReason.limitReached += 1;
+            continue;
+          }
 
           const fileCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:${item.path}`;
           const cachedContent = await this.cacheStore.get<string>(fileCacheKey);
@@ -463,15 +529,31 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
 
             const decodedResult = decodeGitHubContent(payload.content, this.limits.maxContentBytes);
             if (!decodedResult.ok) {
-              if (decodedResult.error.code === "GITHUB_CONTENT_TOO_LARGE") continue;
+              if (decodedResult.error.code === "GITHUB_CONTENT_TOO_LARGE") {
+                coverageDetails.push({ path: item.path, reason: "too-large" });
+                skippedByReason.tooLarge += 1;
+                continue;
+              }
               return decodedResult;
             }
-            content = decodedResult.value;
+            if ("skipped" in decodedResult.value) {
+              const reason = decodedResult.value.reason;
+              coverageDetails.push({ path: item.path, reason });
+              if (reason === "lfs-pointer") skippedByReason.lfsPointer += 1;
+              else if (reason === "unsupported-encoding") skippedByReason.unsupportedEncoding += 1;
+              else if (reason === "too-large") skippedByReason.tooLarge += 1;
+              continue;
+            }
+            content = decodedResult.value.content;
             await this.cacheStore.set(fileCacheKey, content, 3_600_000);
           }
 
           const actualBytes = Buffer.byteLength(content, "utf8");
-          if (fetchedBytes + actualBytes > this.limits.maxTotalBytes) continue;
+          if (fetchedBytes + actualBytes > this.limits.maxTotalBytes) {
+            coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Total bytes limit reached" });
+            skippedByReason.limitReached += 1;
+            continue;
+          }
           fetchedBytes += actualBytes;
           files.push({ path: item.path, type: "file", sizeBytes: itemSize || actualBytes, content, isAnalyzable: true });
         }
@@ -482,6 +564,38 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       const failed = results.find((result) => !result.ok);
       if (failed && !failed.ok) return failed;
       files.sort((a, b) => a.path.localeCompare(b.path));
+
+      const totalDiscovered = treeEntries.length + coverageDetails.length;
+      const filesAnalyzed = files.length;
+      const analyzedPercent = totalDiscovered > 0 ? Math.round((filesAnalyzed / totalDiscovered) * 100) : 100;
+
+      Object.assign(files, {
+        [Symbol.asyncIterator]: async function* () {
+          for (const f of files) {
+            yield f;
+          }
+        },
+      });
+
+      const snapshotCoverage: AnalysisCoverage = {
+        filesConsidered: files.length,
+        filesSkipped: Math.max(0, totalDiscovered - files.length),
+        filesSkippedByReason: {
+          tooLarge: skippedByReason.tooLarge,
+          unsupported: skippedByReason.unsupported,
+          limitReached: skippedByReason.limitReached,
+          ...(skippedByReason.lfsPointer > 0 ? { lfsPointer: skippedByReason.lfsPointer } : {}),
+          ...(skippedByReason.submodule > 0 ? { submodule: skippedByReason.submodule } : {}),
+          ...(skippedByReason.unsupportedEncoding > 0 ? { unsupportedEncoding: skippedByReason.unsupportedEncoding } : {}),
+          ...(skippedByReason.pathCollision > 0 ? { pathCollision: skippedByReason.pathCollision } : {}),
+        },
+        filesSkippedDetails: coverageDetails,
+        skippedFiles: coverageDetails.map((d) => ({ path: d.path, reason: d.reason })),
+        warnings,
+        analyzedPercent,
+        treeTruncated: false,
+        analysisConfidence: files.length === totalDiscovered ? "high" : files.length >= totalDiscovered * 0.5 ? "medium" : "low",
+      };
 
       const id = typeof metadata.id === "number" || typeof metadata.id === "string" ? String(metadata.id) : `${reference.owner}/${reference.name}`;
       const repositoryUrl = `https://github.com/${encodeURIComponent(reference.owner)}/${encodeURIComponent(reference.name)}`;
@@ -496,7 +610,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         sizeBytes: typeof metadata.size === "number" && Number.isSafeInteger(metadata.size) && metadata.size >= 0 && metadata.size <= Number.MAX_SAFE_INTEGER / 1024 ? metadata.size * 1024 : 0,
         fileCount: files.length,
       };
-      return ok({ repository, files });
+      return ok({ repository, files, coverage: snapshotCoverage });
     } catch (error) {
       if (error instanceof AppError) return err(error);
       if (signal?.aborted) return err(new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true }));

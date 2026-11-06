@@ -16,6 +16,7 @@ export interface AnalysisRunOptions {
   budget?: AnalysisBudget;
   analysisId?: string;
   signal?: AbortSignal;
+  files?: RepositoryFile[] | AsyncIterable<RepositoryFile>;
   onProgress?: (progress: { stage: AnalysisResult["stage"]; progress: number; message: string }) => void;
 }
 
@@ -43,24 +44,56 @@ function isSupportedPath(path: string): boolean {
     || /(^|\/)(Dockerfile(?:\..*)?|Makefile|Gemfile|Procfile|Rakefile|go\.mod|go\.sum|Cargo\.toml|Cargo\.lock|pom\.xml|composer\.json)$/.test(path);
 }
 
-function buildCoverage(discovered: readonly RepositoryFile[], analyzed: readonly RepositoryFile[], limits: AnalysisLimits): AnalysisCoverage {
+function buildCoverage(
+  discovered: readonly RepositoryFile[],
+  analyzed: readonly RepositoryFile[],
+  limits: AnalysisLimits,
+  snapshotCoverage?: Partial<AnalysisCoverage>,
+): AnalysisCoverage {
   const analyzedPaths = new Set(analyzed.map((file) => file.path));
-  let tooLarge = 0;
-  let unsupported = 0;
-  let limitReached = 0;
+  let tooLarge = snapshotCoverage?.filesSkippedByReason?.tooLarge ?? 0;
+  let unsupported = snapshotCoverage?.filesSkippedByReason?.unsupported ?? 0;
+  let limitReached = snapshotCoverage?.filesSkippedByReason?.limitReached ?? 0;
+  const lfsPointer = snapshotCoverage?.filesSkippedByReason?.lfsPointer ?? 0;
+  const submodule = snapshotCoverage?.filesSkippedByReason?.submodule ?? 0;
+  const unsupportedEncoding = snapshotCoverage?.filesSkippedByReason?.unsupportedEncoding ?? 0;
+  const pathCollision = snapshotCoverage?.filesSkippedByReason?.pathCollision ?? 0;
+
   for (const file of discovered) {
     if (analyzedPaths.has(file.path)) continue;
     if (fileSize(file) > limits.maxFileBytes) tooLarge += 1;
     else if (!isSupportedPath(file.path)) unsupported += 1;
     else limitReached += 1;
   }
-  const filesSkipped = Math.max(0, discovered.length - analyzed.length);
-  const confidence: AnalysisCoverage["analysisConfidence"] = filesSkipped === 0 ? "high" : filesSkipped <= Math.max(1, discovered.length * 0.1) ? "medium" : "low";
+
+  const filesSkippedDetails = [...(snapshotCoverage?.filesSkippedDetails ?? [])];
+  const warnings = [...(snapshotCoverage?.warnings ?? [])];
+
+  const totalDiscovered = (snapshotCoverage?.filesConsidered !== undefined && snapshotCoverage?.filesSkipped !== undefined)
+    ? (snapshotCoverage.filesConsidered + snapshotCoverage.filesSkipped)
+    : Math.max(discovered.length, analyzed.length);
+  const filesSkipped = Math.max(0, totalDiscovered - analyzed.length);
+  const analyzedPercent = snapshotCoverage?.analyzedPercent ?? (totalDiscovered > 0 ? Math.round((analyzed.length / totalDiscovered) * 100) : 100);
+  const confidence: AnalysisCoverage["analysisConfidence"] =
+    filesSkipped === 0 ? "high" : filesSkipped <= Math.max(1, totalDiscovered * 0.1) ? "medium" : "low";
+
   return {
     filesConsidered: analyzed.length,
     filesSkipped,
-    filesSkippedByReason: { tooLarge, unsupported, limitReached },
-    treeTruncated: false,
+    filesSkippedByReason: {
+      tooLarge,
+      unsupported,
+      limitReached,
+      ...(lfsPointer > 0 ? { lfsPointer } : {}),
+      ...(submodule > 0 ? { submodule } : {}),
+      ...(unsupportedEncoding > 0 ? { unsupportedEncoding } : {}),
+      ...(pathCollision > 0 ? { pathCollision } : {}),
+    },
+    filesSkippedDetails,
+    skippedFiles: filesSkippedDetails.map((f) => ({ path: f.path, reason: f.reason })),
+    warnings,
+    analyzedPercent,
+    treeTruncated: snapshotCoverage?.treeTruncated ?? false,
     analysisConfidence: confidence,
   };
 }
@@ -103,20 +136,49 @@ export async function runAnalysis(
   };
 
   try {
-    progress("fetching-metadata", 12, "Reading repository metadata");
-    const snapshot = await provider.getSnapshot(reference, signal, budget);
-    if (!snapshot.ok) return fail(snapshot.error);
-    budget.check();
-    const repository = redactPathValues(snapshot.value.repository, budget);
+    let repository: typeof job.repository;
+    const rawFiles: RepositoryFile[] = [];
+    let snapshotCoverage: Partial<AnalysisCoverage> | undefined;
+
+    if (options.files) {
+      repository = { id: reference.name, owner: reference.owner, name: reference.name, url: reference.url, defaultBranch: reference.branch ?? "main", selectedBranch: reference.branch ?? "main", sizeBytes: 0, fileCount: 0 };
+      if (Symbol.asyncIterator in options.files) {
+        for await (const file of options.files) {
+          budget.check();
+          rawFiles.push(file);
+        }
+      } else {
+        rawFiles.push(...options.files);
+      }
+    } else {
+      progress("fetching-metadata", 12, "Reading repository metadata");
+      const snapshot = await provider.getSnapshot(reference, signal, budget);
+      if (!snapshot.ok) return fail(snapshot.error);
+      budget.check();
+      repository = redactPathValues(snapshot.value.repository, budget);
+      snapshotCoverage = snapshot.value.coverage;
+
+      if (Symbol.asyncIterator in snapshot.value.files) {
+        for await (const file of snapshot.value.files) {
+          budget.check();
+          rawFiles.push(file);
+        }
+      } else {
+        rawFiles.push(...snapshot.value.files);
+      }
+    }
 
     progress("fetching-files", 28, "Fetching bounded repository content");
-    const files = filterFiles(snapshot.value.files, limits, budget);
+    const files = filterFiles(rawFiles, limits, budget);
     budget.check();
-    const filesDiscovered = snapshot.value.files.length;
+    const totalDiscovered = (snapshotCoverage?.filesConsidered !== undefined && snapshotCoverage?.filesSkipped !== undefined)
+      ? (snapshotCoverage.filesConsidered + snapshotCoverage.filesSkipped)
+      : rawFiles.length;
+    const filesDiscovered = totalDiscovered;
     const filesAnalyzed = files.length;
-    const bytesDiscovered = totalFileBytes(snapshot.value.files);
+    const bytesDiscovered = totalFileBytes(rawFiles);
     const bytesAnalyzed = totalFileBytes(files);
-    const coverage: AnalysisCoverage = buildCoverage(snapshot.value.files, files, limits);
+    const coverage: AnalysisCoverage = buildCoverage(rawFiles, files, limits, snapshotCoverage);
     progress("filtering-files", 42, "Filtering for useful repository signal");
     const technologies = redactPathValues(analyzeTechnologies(files, budget), budget);
     budget.check();

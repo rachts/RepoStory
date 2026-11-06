@@ -49,7 +49,19 @@ export interface AnalysisCoverage {
     tooLarge: number;
     unsupported: number;
     limitReached: number;
+    lfsPointer?: number;
+    submodule?: number;
+    unsupportedEncoding?: number;
+    pathCollision?: number;
   };
+  filesSkippedDetails?: Array<{
+    path: string;
+    reason: "lfs-pointer" | "submodule" | "unsupported-encoding" | "path-collision" | "too-large" | "unsupported" | "limit-reached";
+    details?: string;
+  }>;
+  skippedFiles?: Array<{ path: string; reason: string }>;
+  warnings?: string[];
+  analyzedPercent?: number;
   treeTruncated: boolean;
   analysisConfidence: AnalysisConfidence;
 }

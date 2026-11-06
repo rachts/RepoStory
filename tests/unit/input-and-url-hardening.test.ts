@@ -48,8 +48,8 @@ describe("Workstream 4: Input and URL hardening", () => {
           expect(url.hostname).toBe("api.github.com");
           expect(url.origin).toBe("https://api.github.com");
           expect(url.pathname.startsWith("/repos/")).toBe(true);
-        } catch (e: any) {
-          expect(e.code).toBe("INVALID_URL");
+        } catch (e: unknown) {
+          expect((e as { code?: string }).code).toBe("INVALID_URL");
         }
       });
     }

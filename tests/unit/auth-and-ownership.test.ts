@@ -3,7 +3,7 @@ import { POST as analyzePost } from "@/app/api/analyze/route";
 import { GET as jobGet } from "@/app/api/analyze/jobs/[jobId]/route";
 import { GET as analysisGet } from "@/app/api/analysis/[analysisId]/route";
 import { GET as diagramGet } from "@/app/api/diagrams/[diagramId]/route";
-import { analysisRepository, jobQueue } from "@/composition/container";
+import { analysisRepository } from "@/composition/container";
 import { checkDailyQuota } from "@/application/jobs/job-identity";
 import { opaqueId } from "@/shared/ids";
 
@@ -129,6 +129,8 @@ describe("Workstream 2: Authentication, Authorization & Quotas", () => {
       direction: "TB",
       nodes: [],
       edges: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     }, "user-alice");
 
     // User Bob attempts to access Alice's analysis

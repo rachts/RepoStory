@@ -49,7 +49,7 @@ export async function resolveRequestIdentity(
   if (!sessionUser && nextAuthCookie) {
     try {
       const parts = nextAuthCookie.split(".");
-      if (parts.length === 3) {
+      if (parts.length === 3 && parts[1]) {
         const payloadJson = Buffer.from(parts[1], "base64url").toString("utf8");
         const payload = JSON.parse(payloadJson) as { sub?: string; id?: string };
         sessionUser = payload.sub || payload.id;

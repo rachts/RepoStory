@@ -24,8 +24,10 @@ export type AnalysisLimits = {
   maxPathLength?: number;
   maxEvidenceExcerpt: number;
   maxTreeEntries?: number;
+  maxTreeEntriesCeiling?: number;
   maxImportCandidates?: number;
   maxConcurrentContentRequests?: number;
+  maxConcurrentGitHubContentRequests?: number;
   maxAnalysisMs: number;
 };
 
