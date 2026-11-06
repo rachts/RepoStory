@@ -9,6 +9,9 @@ import { nowIso, opaqueId } from "@/shared/ids";
 import { err, ok, type Result } from "@/shared/result";
 import { createAnalysisBudget, DEFAULT_LIMITS, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
 import { redactPathValues } from "@/shared/redaction";
+import { logger } from "@/shared/logger";
+import { withSpan } from "@/shared/tracer";
+import { repostoryJobsTotal, repostoryJobDurationSeconds } from "@/shared/metrics";
 
 export interface AnalysisRunOptions {
   limits?: AnalysisLimits;
@@ -130,6 +133,8 @@ export async function runAnalysis(
     options.onProgress?.({ stage, progress: progressPercent, message });
   };
   const fail = (error: AppError): Result<AnalysisResult, AppError> => {
+    logger.warn({ analysisId: id, stage: job.stage, code: error.code }, error.message);
+    repostoryJobsTotal.inc({ status: "failed" });
     const failed: AnalysisResult = redactPathValues({ ...job, status: "failed", stage: "completed", error: { code: error.code as AnalysisError["code"], message: error.message, retryable: error.retryable, details: error.details } });
     store.save(failed);
     return err(error);
@@ -152,7 +157,7 @@ export async function runAnalysis(
       }
     } else {
       progress("fetching-metadata", 12, "Reading repository metadata");
-      const snapshot = await provider.getSnapshot(reference, signal, budget);
+      const snapshot = await withSpan("fetch-metadata", async () => provider.getSnapshot(reference, signal, budget));
       if (!snapshot.ok) return fail(snapshot.error);
       budget.check();
       repository = redactPathValues(snapshot.value.repository, budget);
@@ -185,28 +190,33 @@ export async function runAnalysis(
     const phase3 = redactPathValues(analyzePhase3(files, budget, limits), budget);
     budget.check();
     progress("analyzing", 58, "Finding architecture and entry points");
-    const findings: typeof phase3.findings = [];
-    for (const collection of [technologies, analyzeDirectories(files, budget), analyzeEntryPoints(files, budget), phase3.findings]) {
-      for (const finding of collection) {
-        budget.check();
-        findings.push(finding);
+    const safeFindings = await withSpan("analyze", async () => {
+      const findings: typeof phase3.findings = [];
+      for (const collection of [technologies, analyzeDirectories(files, budget), analyzeEntryPoints(files, budget), phase3.findings]) {
+        for (const finding of collection) {
+          budget.check();
+          findings.push(finding);
+        }
       }
-    }
-    const safeFindings = redactPathValues(findings, budget);
+      return redactPathValues(findings, budget);
+    });
     budget.check();
     progress("generating-diagrams", 78, "Generating evidence-backed story maps");
-    const diagrams = [] as NonNullable<ReturnType<typeof repositoryStructureDiagram>>[];
-    budget.check();
-    diagrams.push(repositoryStructureDiagram(id, repository, files, safeFindings, budget));
-    budget.check();
-    const overview = systemOverviewDiagram(id, repository, safeFindings, budget);
-    if (overview) diagrams.push(overview);
-    budget.check();
-    const requestFlow = apiRequestFlowDiagram(id, repository, safeFindings, phase3.moduleRelationships, budget);
-    if (requestFlow) diagrams.push(requestFlow);
-    budget.check();
-    const authFlow = authenticationFlowDiagram(id, repository, safeFindings, phase3.moduleRelationships, budget);
-    if (authFlow) diagrams.push(authFlow);
+    const diagrams = await withSpan("generate-diagrams", async () => {
+      const resultDiagrams = [] as NonNullable<ReturnType<typeof repositoryStructureDiagram>>[];
+      budget.check();
+      resultDiagrams.push(repositoryStructureDiagram(id, repository, files, safeFindings, budget));
+      budget.check();
+      const overview = systemOverviewDiagram(id, repository, safeFindings, budget);
+      if (overview) resultDiagrams.push(overview);
+      budget.check();
+      const requestFlow = apiRequestFlowDiagram(id, repository, safeFindings, phase3.moduleRelationships, budget);
+      if (requestFlow) resultDiagrams.push(requestFlow);
+      budget.check();
+      const authFlow = authenticationFlowDiagram(id, repository, safeFindings, phase3.moduleRelationships, budget);
+      if (authFlow) resultDiagrams.push(authFlow);
+      return resultDiagrams;
+    });
     budget.check();
     const diagramTypes = new Set(diagrams.map((diagram) => diagram.type));
     const diagramAvailability: DiagramAvailability[] = [
@@ -221,12 +231,14 @@ export async function runAnalysis(
 
     budget.check();
     progress("completed", 100, "Analysis complete");
+    repostoryJobsTotal.inc({ status: "succeeded" });
+    repostoryJobDurationSeconds.observe({ stage: "completed" }, (Date.now() - new Date(started).getTime()) / 1000);
     job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered, filesAnalyzed, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), diagrams, architectureStory, coverage, completedAt: nowIso() }, budget);
     store.save(job);
     return ok(job);
   } catch (error) {
     if (error instanceof AppError) return fail(error);
-    console.error("[RepoStory] unexpected analysis pipeline error", error);
+    logger.error({ analysisId: id, stage: job.stage, err: error }, "[RepoStory] unexpected analysis pipeline error");
     return fail(new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true }));
   } finally {
     store.finishAnalysis?.(id);

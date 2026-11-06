@@ -1,8 +1,12 @@
 import { jobQueue, analysisRepository, analysisJobRunner } from "@/composition/container";
 import { JobWorker } from "@/application/jobs/job-worker";
+import { logger } from "@/shared/logger";
+import { initSentry } from "@/shared/sentry";
+
+initSentry();
 
 const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
-console.log(`[RepoStory Worker] Starting worker ${workerId}...`);
+logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
 const worker = new JobWorker(jobQueue, analysisRepository, analysisJobRunner, {
   workerId,
@@ -14,7 +18,7 @@ const worker = new JobWorker(jobQueue, analysisRepository, analysisJobRunner, {
 worker.start();
 
 const shutdown = async (signal: string) => {
-  console.log(`[RepoStory Worker] Received ${signal}. Shutting down gracefully...`);
+  logger.info({ workerId, signal }, `[RepoStory Worker] Received ${signal}. Shutting down gracefully...`);
   await worker.stop();
   process.exit(0);
 };
