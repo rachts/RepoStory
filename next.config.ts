@@ -5,7 +5,7 @@ import type { NextConfig } from "next";
 // rely on dynamic inline style attributes for layout, node coordinates, and transitions.
 const cspHeader = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'",
+  "script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https://avatars.githubusercontent.com https://github.com",
   "connect-src 'self' https://api.github.com https://*.supabase.co https://*.ingest.sentry.io https://*.upstash.io",

@@ -12,6 +12,92 @@ test("landing page exposes the RepoStory analysis flow", async ({ page }) => {
   await expect(page.getByText("From repository to story")).toBeVisible();
 });
 
+test("submits a public repo URL to the analyze flow, waits for completion, and renders the diagram", async ({ page }) => {
+  const diagram = {
+    id: "submit-diagram",
+    analysisId: "submit-analysis",
+    type: "repository-structure",
+    title: "Repository structure",
+    description: "Structure map",
+    direction: "TB",
+    nodes: [{
+      id: "repo-root",
+      technicalLabel: "root",
+      plainEnglishLabel: "Root Directory",
+      explanation: "The root directory.",
+      kind: "directory",
+      visible: true,
+      confidence: "high",
+      evidence: [],
+    }],
+    edges: [],
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+  };
+
+  await page.route("**/api/analyze", async (route) => {
+    if (route.request().method() === "POST") {
+      await route.fulfill({
+        status: 202,
+        json: {
+          jobId: "job-submit-test",
+          statusUrl: "/api/analyze/jobs/job-submit-test",
+        },
+      });
+      return;
+    }
+    await route.fallback();
+  });
+
+  await page.route("**/api/analyze/jobs/job-submit-test", async (route) => {
+    await route.fulfill({
+      json: {
+        jobId: "job-submit-test",
+        analysisId: "submit-analysis",
+        status: "completed",
+        stage: "completed",
+        progress: 100,
+      },
+    });
+  });
+
+  await page.route("**/api/analyze/submit-analysis", async (route) => {
+    await route.fulfill({
+      json: {
+        id: "submit-analysis",
+        repository: {
+          owner: "facebook",
+          name: "react",
+          url: "https://github.com/facebook/react",
+          defaultBranch: "main",
+          selectedBranch: "main",
+          sizeBytes: 1000,
+          fileCount: 10,
+        },
+        status: "completed",
+        stage: "completed",
+        progressPercent: 100,
+        filesDiscovered: 10,
+        filesAnalyzed: 10,
+        technologies: [],
+        findings: [],
+        diagramIds: [diagram.id],
+        diagrams: [diagram],
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    });
+  });
+
+  await page.goto("/");
+  const input = page.getByLabel("Public GitHub repository URL");
+  await input.fill("https://github.com/facebook/react");
+  await page.getByRole("button", { name: /Tell the story/i }).click();
+
+  await expect(page).toHaveURL(/\/analysis\/job-submit-test/);
+  await expect(page.getByText("Repository structure").first()).toBeVisible();
+  await expect(page.getByText("Root Directory")).toBeVisible();
+});
+
 test("edits a deterministic diagram and exports the saved Markdown", async ({ page }) => {
   const diagram = {
     id: "e2e-diagram", analysisId: "e2e-analysis", type: "repository-structure", title: "Repository structure", description: "Original map", direction: "TB",
@@ -20,6 +106,7 @@ test("edits a deterministic diagram and exports the saved Markdown", async ({ pa
     createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z",
   };
   let currentDiagram = structuredClone(diagram);
+  await page.route("**/api/analyze/jobs/**", async (route) => route.fulfill({ status: 404, json: { error: { code: "JOB_NOT_FOUND" } } }));
   await page.route("**/api/analysis/**", async (route) => route.fulfill({ json: { id: "e2e-analysis", repository: { owner: "fixture", name: "small-react", url: "https://github.com/fixture/small-react", defaultBranch: "main", selectedBranch: "main", sizeBytes: 10, fileCount: 1 }, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered: 1, filesAnalyzed: 1, technologies: [], findings: [], diagramIds: [diagram.id], diagrams: [currentDiagram], createdAt: "2026-01-01T00:00:00.000Z" } }));
   await page.route("**/api/diagrams/e2e-diagram", async (route) => {
     if (route.request().method() === "PATCH") {
@@ -89,6 +176,7 @@ test("explains a deterministic fixture in plain English before technical evidenc
     knownLimitations: ["This fixture uses static evidence."],
     confidenceNote: "The main claims have direct fixture evidence.",
   } } }));
+  await page.route("**/api/analyze/jobs/**", async (route) => route.fulfill({ status: 404, json: { error: { code: "JOB_NOT_FOUND" } } }));
   await page.route("**/api/analysis/**", async (route) => route.fulfill({ json: { id: "fixture-analysis", repository: { owner: "fixture", name: "fixture-app", url: "https://github.com/fixture/fixture-app", defaultBranch: "main", selectedBranch: "main", sizeBytes: 30, fileCount: 3 }, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered: 3, filesAnalyzed: 3, technologies: [], findings: [], diagramIds: [systemDiagram.id, apiDiagram.id], diagrams: [systemDiagram, apiDiagram], architectureStory: story, createdAt: "2026-01-01T00:00:00.000Z" } }));
   await page.route("**/api/exports", async (route) => { exportRequest = route.request().postDataJSON(); await route.fulfill({ json: { content: "## How the application works\n```mermaid\nflowchart LR\n```", filename: "system-overview.md", mimeType: "text/markdown" } }); });
   await page.goto("/analysis/fixture-analysis");
