@@ -12,6 +12,7 @@ import type { CacheStore } from "@/application/cache/cache-store";
 import { InMemoryCacheStore } from "@/infrastructure/cache/in-memory-cache-store";
 import { decodeFileBuffer, detectCaseCollisions, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
 import type { AnalysisCoverage } from "@/domain/analysis";
+import { repostoryGitHubRequestsTotal, repostoryGitHubRateLimitErrorsTotal } from "@/shared/metrics";
 
 export interface GitHubProviderOptions {
   token?: string;
@@ -298,6 +299,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       };
 
       const response = await this.fetchImpl(url.toString(), requestInit);
+      repostoryGitHubRequestsTotal.inc({ endpoint: stage, status: String(response.status) });
 
       this.tokenPool.updateRateLimit(
         token,
@@ -326,6 +328,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       const isRateLimited = response.status === 429 || (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.get("retry-after")));
 
       if (isRateLimited) {
+        repostoryGitHubRateLimitErrorsTotal.inc();
         const reset = response.headers.get("x-ratelimit-reset");
         const retryAfter = response.headers.get("retry-after");
         const resetEpoch = reset && /^\d+$/.test(reset)
@@ -475,6 +478,10 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             }
           } catch {
             warnings.push("Failed to fetch subtrees for truncated repository. Analyzing partial tree.");
+          }
+
+          if (rawTreeEntries.length === 0) {
+            return err(new AppError({ code: "GITHUB_TREE_TRUNCATED", message: "GitHub repository tree was truncated and cannot be analyzed safely." }));
           }
         }
 
