@@ -25,14 +25,14 @@ export const serverConfig = {
     ? "memory"
     : process.env.REPO_STORY_JOB_STORE === "memory"
       ? "memory"
-      : process.env.REPO_STORY_JOB_STORE === "supabase" || Boolean(process.env.SUPABASE_SECRET_KEY?.trim() && (process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()))
+      : process.env.REPO_STORY_JOB_STORE === "supabase"
         ? "supabase"
-        : (process.env.NODE_ENV === "production" ? "supabase" : "file"),
+        : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
   queueMode: process.env.NODE_ENV === "test"
     ? "memory"
     : process.env.REPO_STORY_QUEUE_MODE === "memory"
       ? "memory"
-      : process.env.REPO_STORY_QUEUE_MODE === "supabase" || Boolean(process.env.SUPABASE_SECRET_KEY?.trim() && (process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()))
+      : process.env.REPO_STORY_QUEUE_MODE === "supabase"
         ? "supabase"
         : (process.env.NODE_ENV === "production" && process.env.ALLOW_IN_MEMORY_QUEUE !== "true" ? "supabase" : "memory"),
   jobStorePath: process.env.REPO_STORY_JOB_STORE_PATH?.trim() || ".repo-story-data/state.json",
