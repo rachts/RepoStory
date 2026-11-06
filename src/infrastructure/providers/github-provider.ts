@@ -399,6 +399,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       const branchCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${branch}:tree`;
       let treeEntries = await this.cacheStore.get<GitHubTreeEntry[]>(branchCacheKey);
       let commitSha = branch;
+      let isTruncated = false;
 
       if (!treeEntries) {
         budget?.check();
@@ -413,22 +414,81 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         if (typeof treePayload.sha === "string") {
           commitSha = treePayload.sha;
         }
-        if (treePayload.truncated === true) {
-          return err(new AppError({ code: "GITHUB_TREE_TRUNCATED", message: "GitHub repository tree was truncated and cannot be analyzed safely." }));
+        isTruncated = treePayload.truncated === true;
+        let rawTreeEntries: unknown[] = Array.isArray(treePayload.tree) ? treePayload.tree : [];
+
+        if (isTruncated) {
+          warnings.push("GitHub repository tree was truncated. Attempting top-level subtree resolution.");
+          try {
+            const rootTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`);
+            const rootTreeResponse = await this.dispatch(rootTreeUrl, fetchOptions, "root-tree", budget);
+            if (rootTreeResponse.ok) {
+              const rootTreeResult = await readJsonResponse<Record<string, unknown>>(rootTreeResponse, "root-tree", responseLimit, budget);
+              if (rootTreeResult.ok && isRecord(rootTreeResult.value) && Array.isArray(rootTreeResult.value.tree)) {
+                const mergedTree: unknown[] = [];
+                let anySubtreeFailed = false;
+
+                for (const item of rootTreeResult.value.tree) {
+                  budget?.check();
+                  if (!isRecord(item)) continue;
+                  if (item.type === "blob") {
+                    mergedTree.push(item);
+                  } else if (item.type === "tree" && typeof item.path === "string" && typeof item.sha === "string") {
+                    try {
+                      budget?.check();
+                      const subTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(item.sha)}`, { recursive: "1" });
+                      const subResponse = await this.dispatch(subTreeUrl, fetchOptions, "subtree", budget);
+                      if (subResponse.ok) {
+                        const subResult = await readJsonResponse<Record<string, unknown>>(subResponse, "subtree", responseLimit, budget);
+                        if (subResult.ok && isRecord(subResult.value) && Array.isArray(subResult.value.tree)) {
+                          for (const subItem of subResult.value.tree) {
+                            if (isRecord(subItem) && typeof subItem.path === "string") {
+                              mergedTree.push({
+                                ...subItem,
+                                path: `${item.path}/${subItem.path}`,
+                              });
+                            }
+                          }
+                        } else {
+                          anySubtreeFailed = true;
+                        }
+                      } else {
+                        anySubtreeFailed = true;
+                      }
+                    } catch {
+                      anySubtreeFailed = true;
+                    }
+                  }
+                }
+
+                if (mergedTree.length > 0) {
+                  rawTreeEntries = mergedTree;
+                  if (anySubtreeFailed) {
+                    warnings.push("One or more subtrees failed to fetch. Partial tree analyzed.");
+                  } else {
+                    isTruncated = false;
+                  }
+                }
+              }
+            } else {
+              warnings.push("Top-level tree request failed. Analyzing partial tree.");
+            }
+          } catch {
+            warnings.push("Failed to fetch subtrees for truncated repository. Analyzing partial tree.");
+          }
         }
-        if (!Array.isArray(treePayload.tree)) return err(invalidResponse("tree"));
 
         const configuredMaxTreeEntries = this.limits.maxTreeEntries;
         const ceiling = this.limits.maxTreeEntriesCeiling ?? (configuredMaxTreeEntries !== undefined && configuredMaxTreeEntries < 1000 ? configuredMaxTreeEntries : 100_000);
         budget?.check();
-        if (treePayload.tree.length > ceiling) return err(treeTooLarge(ceiling));
+        if (rawTreeEntries.length > ceiling) return err(treeTooLarge(ceiling));
 
         const effectiveMaxTreeEntries = typeof configuredMaxTreeEntries === "number" && configuredMaxTreeEntries < 1000
           ? configuredMaxTreeEntries
           : Math.min(ceiling, Math.max(this.limits.maxFiles ?? 2000, 10_000));
 
         treeEntries = [];
-        for (const rawEntry of treePayload.tree) {
+        for (const rawEntry of rawTreeEntries) {
           budget?.check();
           if (!isRecord(rawEntry) || typeof rawEntry.path !== "string" || typeof rawEntry.type !== "string") return err(invalidResponse("tree"));
           if (rawEntry.size !== undefined && (typeof rawEntry.size !== "number" || !Number.isSafeInteger(rawEntry.size) || rawEntry.size < 0)) return err(invalidResponse("tree"));
@@ -593,7 +653,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         skippedFiles: coverageDetails.map((d) => ({ path: d.path, reason: d.reason })),
         warnings,
         analyzedPercent,
-        treeTruncated: false,
+        treeTruncated: isTruncated,
         analysisConfidence: files.length === totalDiscovered ? "high" : files.length >= totalDiscovered * 0.5 ? "medium" : "low",
       };
 
