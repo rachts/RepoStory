@@ -311,4 +311,26 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     this.diagrams.set(id, reset);
     return structuredClone(reset);
   }
+
+  public async countAnalysesSince(ownerId: string, since: Date): Promise<number> {
+    const sinceTime = since.getTime();
+    let count = 0;
+    for (const job of this.durableJobs.values()) {
+      if (job.ownerId === ownerId && new Date(job.createdAt).getTime() >= sinceTime) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  public async migrateAnonymousOwnership(fromOwnerId: string, toOwnerId: string): Promise<number> {
+    let count = 0;
+    for (const [, job] of this.durableJobs) {
+      if (job.ownerId === fromOwnerId) {
+        job.ownerId = toOwnerId;
+        count += 1;
+      }
+    }
+    return count;
+  }
 }

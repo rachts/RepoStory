@@ -19,7 +19,7 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
 
   public constructor(options: { filePath: string; maxAnalyses?: number; ttlMs?: number }) {
     this.filePath = options.filePath;
-    this.delegate = new InMemoryAnalysisStore({ maxAnalyses: options.maxAnalyses, ttlMs: options.ttlMs });
+    this.delegate = new InMemoryAnalysisStore({ maxAnalyses: options.maxAnalyses, ttlMs: options.ttlMs, isScratch: true });
   }
 
   private storageError(operation: string, cause?: unknown): AppError {
@@ -85,4 +85,6 @@ export class FileAnalysisJobRepository implements AnalysisJobRepository {
   public async getAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined> { await this.ensureLoaded(); return this.delegate.getAnalysisDiagram(diagramId, ownerId); }
   public async listAnalysisDiagrams(analysisId: string, ownerId?: string): Promise<Diagram[]> { await this.ensureLoaded(); return this.delegate.listAnalysisDiagrams(analysisId, ownerId); }
   public async resetAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined> { await this.ensureLoaded(); const result = await this.delegate.resetAnalysisDiagram(diagramId, ownerId); if (result) await this.persist(); return result; }
+  public async countAnalysesSince(ownerId: string, since: Date): Promise<number> { await this.ensureLoaded(); return this.delegate.countAnalysesSince(ownerId, since); }
+  public async migrateAnonymousOwnership(fromOwnerId: string, toOwnerId: string): Promise<number> { await this.ensureLoaded(); const count = await this.delegate.migrateAnonymousOwnership(fromOwnerId, toOwnerId); if (count > 0) await this.persist(); return count; }
 }

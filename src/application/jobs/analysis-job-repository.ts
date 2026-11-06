@@ -40,6 +40,9 @@ export interface AnalysisJobRepository {
   getAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined>;
   listAnalysisDiagrams(analysisId: string, ownerId?: string): Promise<Diagram[]>;
   resetAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined>;
+
+  countAnalysesSince(ownerId: string, since: Date): Promise<number>;
+  migrateAnonymousOwnership(fromOwnerId: string, toOwnerId: string): Promise<number>;
 }
 
 export interface PersistedAnalysisRepositoryState {

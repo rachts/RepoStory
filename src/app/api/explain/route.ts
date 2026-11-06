@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { buildExplanationInput, collectExplanationEvidenceIds } from "@/application/ai/build-explanation-input";
-import { analysisStore } from "@/composition/container";
-import { analysisRepository } from "@/composition/container";
-import { ownerIdFromRequest } from "@/application/jobs/job-identity";
+import { analysisRepository, analysisStore } from "@/composition/container";
+import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { projectExplanationSchema, unknownExplanationEvidenceIds } from "@/domain/ai-explanation";
 import { AppError } from "@/domain/errors";
 import { generateProjectExplanation } from "@/infrastructure/ai/groq-client";
@@ -18,22 +17,28 @@ export async function POST(request: Request): Promise<NextResponse> {
   let persistedJob: Awaited<ReturnType<typeof analysisRepository.getJobByAnalysisId>>;
   let persistedAnalysisId: string | undefined;
   try {
+    const identity = await resolveRequestIdentity(request, analysisRepository);
+    if (!identity.ok) {
+      return jsonResponse({ error: { code: identity.error.code, message: identity.error.message, retryable: false } }, { status: 401 });
+    }
+    const ownerId = identity.value.ownerId;
+
     const body = await readJsonBody(request, MAX_REQUEST_BYTES);
     const input = requestSchema.parse(body);
     persistedAnalysisId = input.analysisId;
-    const { ownerId } = ownerIdFromRequest(request);
-    const job = await analysisRepository.getJobByAnalysisId(input.analysisId, ownerId);
+    const job = await analysisRepository.getJobByAnalysisId(input.analysisId);
+    if (job && job.ownerId !== ownerId) return jsonResponse({ error: { code: "ANALYSIS_NOT_FOUND", message: "Analysis not found.", retryable: false } }, { status: 404 });
     persistedJob = job;
+
     const cachedExplanation = job && !input.force ? await analysisRepository.getExplanation(input.analysisId, ownerId) : undefined;
     if (cachedExplanation) {
       const parsedCachedExplanation = projectExplanationSchema.safeParse(cachedExplanation);
       if (parsedCachedExplanation.success) return jsonResponse(redactPathValues({ analysisId: input.analysisId, explanation: parsedCachedExplanation.data, model: serverConfig.groqModel, generatedAt: new Date().toISOString(), cached: true }));
     }
     const cachedUnavailable = job && !input.force ? await analysisRepository.getExplanationUnavailable(input.analysisId, ownerId) : undefined;
-    // Request/schema rejections can be fixed by a server deployment. Do not
-    // let an old cached provider rejection permanently disable explanations.
     const retryAfterProviderFix = cachedUnavailable?.code === "AI_REQUEST_REJECTED" || cachedUnavailable?.code === "AI_INVALID_RESPONSE";
     if (cachedUnavailable && !retryAfterProviderFix) return jsonResponse({ error: { code: cachedUnavailable.code, message: cachedUnavailable.message, retryable: false } }, { status: 503 });
+
     const analysis = job ? await analysisRepository.getAnalysisResult(input.analysisId, ownerId) : analysisStore.get(input.analysisId);
     if (!analysis) return jsonResponse({ error: { code: "ANALYSIS_NOT_FOUND", message: "Analysis not found.", retryable: false } }, { status: 404 });
     if (analysis.status !== "completed") return jsonResponse({ error: { code: "AI_NOT_READY", message: "The deterministic analysis is not complete yet.", retryable: true } }, { status: 409 });
