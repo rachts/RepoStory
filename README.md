@@ -586,110 +586,115 @@ global package installation.
 
 | Variable | Required | Purpose | Default |
 | --- | --- | --- | --- |
-| `GITHUB_TOKEN` | No | Optional bearer token for higher public GitHub API rate limits. | Empty. |
-| `REPO_STORY_JOB_STORE` | No | `supabase`, `file`, or `memory`. Supabase is selected automatically when its server credentials are present. | `file` locally. |
-| `REPO_STORY_JOB_STORE_PATH` | No | Writable persistent JSON state path when using the file store. | `.repo-story-data/state.json`. |
-| `SUPABASE_URL` | For Supabase | Server-side Supabase project URL. `NEXT_PUBLIC_SUPABASE_URL` is accepted as a fallback. | Empty. |
-| `SUPABASE_SECRET_KEY` | For Supabase | Server-only Supabase Secret key used by the REST adapter. | Empty. |
-| `REPO_STORY_MAX_ANALYSES` | No | Maximum number of analyses retained by the local result store. | `100`. |
-| `REPO_STORY_ANALYSIS_TTL_MS` | No | Store entry TTL in milliseconds. | `3600000` (one hour). |
-| `REPO_STORY_JOB_TTL_MS` | No | Job and result expiration window in milliseconds. | `3600000`. |
-| `REPO_STORY_MAX_CONCURRENT_JOBS` | No | Maximum analyses started concurrently by one process. | `2`. |
-| `REPO_STORY_MAX_JOB_RETRIES` | No | Maximum automatic/manual retries for retryable failures. | `2`. |
-| `REPO_STORY_JOB_RETRY_BACKOFF_MS` | No | Base retry backoff in milliseconds. | `250`. |
-| `REPO_STORY_ANALYZER_VERSION` | No | Cache-key version for deterministic analyzer changes. | `phase-async-1`. |
-| `REPO_STORY_CONFIG_VERSION` | No | Cache-key version for configuration changes. | `1`. |
-| `GROQ_API_KEY` | No | Server-only key for the optional project explanation layer. | Empty; explanations are unavailable. |
-| `GROQ_MODEL` | No | Groq model used for structured explanations. | `openai/gpt-oss-120b`. |
-| `GROQ_TIMEOUT_MS` | No | Maximum time allowed for one explanation request. | `30000`. |
-| `GROQ_MAX_INPUT_CHARS` | No | Maximum serialized sanitized analysis payload sent to Groq. | `60000`. |
-| `GROQ_ENABLED` | No | Enables or disables the optional explanation route. | `true`. |
+| `GITHUB_TOKEN` | No | Optional bearer token for public GitHub API access. | Empty. |
+| `GITHUB_TOKENS` | No | Comma-separated token pool for quota-aware token rotation. | Empty. |
+| `REPO_STORY_JOB_STORE` | No | `supabase` (production default), `file`, or `memory` (dev/test only). | `supabase` when credentials present, else `file`. |
+| `SUPABASE_URL` | For Supabase | Server-side Supabase project URL. | Empty. |
+| `SUPABASE_SECRET_KEY` | For Supabase | Server-only Supabase Service Secret key. | Empty. |
+| `ALLOW_IN_MEMORY_QUEUE` | Prod Guard | Must be `true` to allow `InMemoryJobQueue` when `NODE_ENV=production`. | `false`. |
+| `ALLOW_IN_MEMORY_STORE` | Prod Guard | Must be `true` to allow `InMemoryAnalysisStore` when `NODE_ENV=production`. | `false`. |
+| `NEXTAUTH_URL` | Auth | Canonical application URL for NextAuth. | `http://localhost:3000`. |
+| `NEXTAUTH_SECRET` | Auth | Secret for JWT and session signing. | Required in production. |
+| `GITHUB_CLIENT_ID` | Auth | GitHub OAuth App client ID. | Empty. |
+| `GITHUB_CLIENT_SECRET` | Auth | GitHub OAuth App client secret. | Empty. |
+| `ANONYMOUS_ANALYSIS_ENABLED` | Auth | Feature flag allowing unauthenticated analysis. | `true` in dev, `false` in prod. |
+| `ANALYSIS_DAILY_QUOTA` | Quotas | Analyses allowed per UTC day per user. Exceeding returns `429`. | `5`. |
+| `UPSTASH_REDIS_REST_URL` | Rate Limit | Upstash Redis REST URL for distributed rate limiting. | Empty (in-memory limiter). |
+| `UPSTASH_REDIS_REST_TOKEN` | Rate Limit | Upstash Redis REST token. | Empty. |
+| `FETCH_LFS` | LFS | Whether to fetch Git LFS pointer file targets. | `false`. |
+| `MAX_LFS_BYTES` | LFS | Maximum file size for fetched LFS targets. | `5242880` (5 MB). |
+| `SUBMODULE_MAX_DEPTH` | Submodules | Recursion depth for submodules (0 to 2). | `0` (coverage only). |
+| `MAX_HEAP_BYTES` | Budget | Node.js heap ceiling before graceful partial analysis. | `536870912` (512 MB). |
+| `MAX_TREE_ENTRIES_CEILING` | Tree Limit | Maximum tree entries before rejecting as oversized. | `100000`. |
+| `LOG_LEVEL` | Logging | Pino log level (`trace`, `debug`, `info`, `warn`, `error`). | `info`. |
+| `METRICS_BEARER_TOKEN` | Metrics | Bearer token protecting Prometheus `/api/metrics`. | Empty. |
+| `SENTRY_DSN` | Telemetry | Sentry error tracking DSN (scrubs sensitive fields). | Empty. |
+| `CORS_ALLOWED_ORIGINS` | Security | Comma-separated allowlist of origins permitted for `/api/*`. | Empty (CORS disabled). |
+| `INCREMENTAL_ANALYSIS_ENABLED` | Phase 3 | Feature flag for GitHub compare API incremental analysis. | `false`. |
+| `GROQ_API_KEY` | Optional AI | Server-only key for optional AI project explanation layer. | Empty. |
 
-Do not commit `.env.local` or a real token. The repository ignores `.env*`
-files except for `.env.example`.
-
-### Run the development server
-
-```bash
-npm run dev
-```
-
-Open <http://localhost:3000>. The landing page accepts a public GitHub
-repository URL. The health endpoint is available at
-<http://localhost:3000/api/health>.
+Do not commit `.env.local` or real credentials. The repository ignores `.env*`
+files except for `.env.example`. Startup fails fast with clear diagnostic messages
+if production configuration requirements are not satisfied.
 
 ### Available commands
 
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Start the Next.js development server. |
+| `npm run worker` | Start the standalone background job worker. |
 | `npm run build` | Build the standalone Next.js production output. |
-| `npm run start` | Start the production server after `npm run build`. |
-| `npm run lint` | Run ESLint with the Next.js Core Web Vitals and TypeScript configurations. |
-| `npm run typecheck` | Run strict TypeScript checking without emitting files. |
-| `npm test` | Run the Vitest suite once. |
-| `npm run test:watch` | Run Vitest in watch mode. |
-| `npm run test:e2e` | Run the Playwright Chromium suite using the configured development server. |
-| `make test` | Canonical offline-capable test command; runs `npm test -- --run`. |
-| `make lint` | Make target for `npm run lint`. |
-| `make typecheck` | Make target for `npm run typecheck`. |
-| `make build` | Make target for `npm run build`. |
+| `npm run start` | Start the Next.js production web server. |
+| `npm run lint` | Run ESLint with Core Web Vitals and TypeScript rules. |
+| `npm run typecheck` | Run strict TypeScript compiler verification without emitting code. |
+| `npm test` | Run the full Vitest suite. |
+| `npm run test:unit` | Run unit and component test suites (fast, no external calls). |
+| `npm run test:integration` | Run integration test suite against offline GitHub MSW mocks. |
+| `npm run test:e2e` | Run Playwright end-to-end tests against local server build. |
+| `make test` | Run unit and integration test tiers sequentially. |
+| `make unit` | Run unit tests (`npm run test:unit`). |
+| `make integration` | Run offline MSW integration tests (`npm run test:integration`). |
+| `make e2e` | Run Playwright e2e tests (`npm run test:e2e`). |
+| `make worker` | Run the background worker (`npm run worker`). |
+| `make lint` | Run ESLint (`npm run lint`). |
+| `make typecheck` | Run TypeScript checking (`npm run typecheck`). |
+| `make build` | Build production bundle (`npm run build`). |
 
-### Production-style local run
+### Running the background worker
 
-```bash
-npm run build
-npm run start
-```
-
-The Next configuration uses `output: "standalone"`, and the production server
-listens on port `3000` by default.
-
-### Docker
-
-A multi-stage `Dockerfile` pins `node:22.14.0-alpine`, builds the standalone
-Next.js output, creates a non-root `nextjs` user, binds the server to
-`0.0.0.0`, exposes port 3000, and declares a health check against
-`/api/health`. Mount a persistent volume at `/app/data`; without that volume,
-job state is lost when the container is replaced.
-
-When Docker is available, build and run the deployment artifact with:
+RepoStory uses an asynchronous, durable worker model. Web instances enqueue jobs,
+and background workers claim and execute them:
 
 ```bash
-docker build --tag repo-story:local .
-docker run --rm --name repo-story --publish 3000:3000 --env-file .env.local --volume repo-story-data:/app/data repo-story:local
+# Terminal 1: Web server
+npm run dev
+
+# Terminal 2: Background worker
+npm run worker
 ```
 
-The container runs in the foreground; press `Ctrl-C` to stop it. In another
-terminal, verify the deployment with:
+In production, deploy web and worker instances separately using the provided `Procfile`
+or Docker targets:
+```text
+web: npm run start
+worker: npm run worker
+```
+
+### Docker deployment
+
+The multi-stage `Dockerfile` uses pinned `node:22.14.0-alpine`, runs as a non-root
+`nextjs:nodejs` user, and provides distinct build targets for `web` and `worker`:
 
 ```bash
-curl --fail --show-error http://localhost:3000/api/health
-```
+# Build the web image
+docker build --target web --tag repostory-web:latest .
 
-The Supabase adapter is suitable for persistent multi-instance storage, but the
-current in-process runner still executes work inside the web process. A
-serverless deployment should move job execution to a durable worker/queue
-before exposing it publicly. The file adapter remains limited to one
-long-running container with a persistent volume.
+# Build the worker image
+docker build --target worker --tag repostory-worker:latest .
+
+# Run the web container
+docker run --rm --name repostory-web -p 3000:3000 --env-file .env.production repostory-web:latest
+
+# Run the worker container
+docker run --rm --name repostory-worker --env-file .env.production repostory-worker:latest
+```
 
 ## API reference
 
-The API is implemented as Next.js App Router route handlers under
-`src/app/api`. The routes use an anonymous opaque session cookie for ownership;
-this is not authentication. Analysis and diagram IDs are opaque and are scoped
-to that session in the application flow.
+The API is implemented as Next.js App Router route handlers under `src/app/api`.
+Endpoints enforce authentication and ownership. When anonymous mode is disabled,
+unauthenticated requests return `401 Unauthorized`. Users cannot access resources
+owned by other accounts (returns `404 Not Found` to avoid leaking resource existence).
 
-### `GET /api/health`
+### Health & Monitoring
 
-Returns a small liveness response.
-
-```json
-{
-  "status": "ok",
-  "service": "repo-story"
-}
-```
+- `GET /api/health/live`: Liveness probe indicating process is responsive (`200 OK`).
+- `GET /api/health/ready`: Readiness probe verifying GitHub reachability, database connectivity, and job queue functionality. Returns `503 Service Unavailable` if any dependency is degraded.
+- `GET /api/metrics`: Prometheus metrics endpoint protected by `METRICS_BEARER_TOKEN`. Exposes:
+  - `repostory_jobs_total{status}`
+  - `repostory_job_duration_seconds{stage}`
+  - `repostory_github_requests_total{endpoint,status}`
+  - `repostory_github_rate_limit_errors_total`
 
 ### `POST /api/analyze`
 
