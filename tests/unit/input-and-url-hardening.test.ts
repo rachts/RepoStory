@@ -61,4 +61,32 @@ describe("Workstream 4: Input and URL hardening", () => {
       expect(normalUrl.pathname).toBe("/repos/facebook/react");
     });
   });
+
+  describe("redirect policy enforcement", () => {
+    it("fails the request when a 3xx redirect to another host is received", async () => {
+      const { GitHubPublicRepositoryProvider } = await import("@/infrastructure/providers/github-provider");
+      const provider = new GitHubPublicRepositoryProvider({
+        fetchImpl: async () => {
+          return new Response("Redirect", {
+            status: 302,
+            headers: {
+              location: "https://evil.attacker.com/steal-token",
+            },
+          });
+        },
+      });
+
+      const result = await provider.getSnapshot({
+        owner: "test-owner",
+        name: "test-repo",
+        url: "https://github.com/test-owner/test-repo",
+      });
+
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe("REPOSITORY_INACCESSIBLE");
+        expect(result.error.message).toMatch(/redirected to an unauthorized external host|failed/i);
+      }
+    });
+  });
 });
