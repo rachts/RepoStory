@@ -10,6 +10,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:unit": "vitest run tests/unit tests/component --exclude \"**/*msw*\" --exclude \"**/truncated-trees*\"",
+    "test:integration": "vitest run tests/unit/github-resilience-msw.test.ts tests/unit/truncated-trees.test.ts",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
   },
