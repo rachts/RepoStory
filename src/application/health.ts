@@ -1,4 +1,5 @@
 import { analysisRepository, jobQueue } from "@/composition/container";
+import { Octokit } from "@octokit/rest";
 
 export interface ReadinessCheckResult {
   ready: boolean;
@@ -29,13 +30,16 @@ export async function checkReadiness(overrides?: {
     }
   } else {
     try {
-      const res = await fetch("https://api.github.com/zen", {
-        headers: { "User-Agent": "RepoStory-HealthCheck" },
-        signal: AbortSignal.timeout(3000),
+      const octokit = new Octokit({ request: { redirect: "error" } });
+      const res = await octokit.request("GET https://api.github.com/zen", {
+        headers: { "user-agent": "RepoStory-HealthCheck" },
+        request: { signal: AbortSignal.timeout(3000) },
       });
-      github = res.ok || res.status === 403 || res.status === 429; // 403/429 means reachable even if rate limited
-    } catch (e) {
-      errors.github = String(e);
+      github = res.status === 200;
+    } catch (e: any) {
+      const status = e?.status;
+      github = status === 403 || status === 429;
+      if (!github) errors.github = String(e);
     }
   }
 

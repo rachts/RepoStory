@@ -25,6 +25,7 @@ export class GitHubCircuitBreaker {
   }
 
   public recordSuccess(): void {
+    if (this.isOpen()) return;
     this.consecutiveFailures = 0;
     this.openUntil = 0;
   }
