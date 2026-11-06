@@ -30,6 +30,7 @@ export interface RepositoryReference {
 export interface RepositorySnapshot {
   repository: Repository;
   files: RepositoryFile[];
+  coverage?: Partial<import("@/domain/analysis").AnalysisCoverage>;
 }
 
 export interface RepositoryProvider {

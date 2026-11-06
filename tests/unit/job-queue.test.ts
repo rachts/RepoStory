@@ -29,7 +29,7 @@ function createFixtureJob(id = "job-test-1"): AnalysisJobRecord {
 
 describe("Workstream 1: Durable Job Queue & Worker", () => {
   it("enforces state machine: queued -> running -> succeeded", async () => {
-    let fakeTime = 10000;
+    const fakeTime = 10000;
     const queue = new InMemoryJobQueue({ now: () => fakeTime });
 
     const item = await queue.enqueue("job-1");
@@ -163,7 +163,7 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
     const origAllowS = process.env.ALLOW_IN_MEMORY_STORE;
 
     try {
-      process.env.NODE_ENV = "production";
+      (process.env as Record<string, string | undefined>).NODE_ENV = "production";
       delete process.env.ALLOW_IN_MEMORY_QUEUE;
       delete process.env.ALLOW_IN_MEMORY_STORE;
 
@@ -177,7 +177,7 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
       expect(() => new InMemoryJobQueue()).not.toThrow();
       expect(() => new InMemoryAnalysisStore()).not.toThrow();
     } finally {
-      process.env.NODE_ENV = origEnv;
+      (process.env as Record<string, string | undefined>).NODE_ENV = origEnv;
       process.env.ALLOW_IN_MEMORY_QUEUE = origAllowQ;
       process.env.ALLOW_IN_MEMORY_STORE = origAllowS;
     }

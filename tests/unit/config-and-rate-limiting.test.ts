@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateEnv } from "@/config/env";
 import { InMemoryRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
-import { POST as analyzePost } from "@/app/api/analyze/route";
 
 describe("Workstream 8: Configuration validation and inbound rate limiting", () => {
   describe("Config validation fail-fast", () => {
