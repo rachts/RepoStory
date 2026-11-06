@@ -99,6 +99,9 @@ export interface AnalysisJobRecord {
   cancellationRequested?: boolean;
   error?: AnalysisJobError;
   coverage?: AnalysisCoverage;
+  orgId?: string;
+  commitSha?: string;
+  blobShas?: Record<string, string>;
 }
 
 /**
@@ -128,6 +131,9 @@ export interface AnalysisResult {
   completedAt?: string;
   diagrams?: import("@/domain/diagram").Diagram[];
   coverage?: AnalysisCoverage;
+  orgId?: string;
+  commitSha?: string;
+  blobShas?: Record<string, string>;
   explanation?: ProjectExplanation;
   explanationUnavailable?: { code: string; message: string };
 }
