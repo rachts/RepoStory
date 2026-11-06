@@ -129,7 +129,7 @@ export class AnalysisJobRunner {
       if (!current || current.status === "cancelled" || current.cancellationRequested) return;
       const analysisId = current.analysisId ?? opaqueId("analysis");
       await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", updatedAt: nowIso() });
-      const scratchStore = new InMemoryAnalysisStore({ maxAnalyses: 2, ttlMs: DEFAULT_LIMITS.maxAnalysisMs * 4 });
+      const scratchStore = new InMemoryAnalysisStore({ maxAnalyses: 2, ttlMs: DEFAULT_LIMITS.maxAnalysisMs * 4, isScratch: true });
       const result = await runAnalysis(repositoryReference(current), this.provider, scratchStore, {
         analysisId,
         signal: controller.signal,
