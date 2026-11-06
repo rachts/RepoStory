@@ -8,7 +8,12 @@ create table if not exists organizations (
   updated_at timestamptz not null default now()
 );
 
-create type org_role as enum ('viewer', 'analyst', 'admin');
+do $$
+begin
+  if not exists (select 1 from pg_type where typname = 'org_role') then
+    create type org_role as enum ('viewer', 'analyst', 'admin');
+  end if;
+end $$;
 
 create table if not exists organization_memberships (
   id text primary key,
@@ -19,50 +24,72 @@ create table if not exists organization_memberships (
   unique (org_id, user_id)
 );
 
--- Add optional org_id to analysis_jobs and analysis_diagrams
-alter table analysis_jobs
+-- Add optional org_id to repo_story_jobs and repo_story_diagrams
+alter table if exists repo_story_jobs
   add column if not exists org_id text references organizations(id) on delete cascade;
 
-alter table analysis_diagrams
+alter table if exists repo_story_diagrams
   add column if not exists org_id text references organizations(id) on delete cascade;
 
-create index if not exists idx_jobs_org_id on analysis_jobs(org_id);
-create index if not exists idx_diagrams_org_id on analysis_diagrams(org_id);
+create index if not exists idx_jobs_org_id on repo_story_jobs(org_id);
+create index if not exists idx_diagrams_org_id on repo_story_diagrams(org_id);
 create index if not exists idx_org_memberships_user on organization_memberships(user_id);
 
 -- Enable RLS
 alter table organizations enable row level security;
 alter table organization_memberships enable row level security;
 
+-- Helper security definer functions to prevent RLS recursion
+create or replace function public.is_org_member(check_org_id text)
+returns boolean
+language plpgsql
+security definer
+stable
+as $$
+begin
+  return exists (
+    select 1 from public.organization_memberships
+    where org_id = check_org_id
+      and user_id = auth.uid()::text
+  );
+end;
+$$;
+
+create or replace function public.is_org_admin(check_org_id text)
+returns boolean
+language plpgsql
+security definer
+stable
+as $$
+begin
+  return exists (
+    select 1 from public.organization_memberships
+    where org_id = check_org_id
+      and user_id = auth.uid()::text
+      and role = 'admin'
+  );
+end;
+$$;
+
 -- Policies for organizations
+drop policy if exists "Org members can read their organization" on organizations;
 create policy "Org members can read their organization"
   on organizations for select
   using (
-    exists (
-      select 1 from organization_memberships
-      where organization_memberships.org_id = organizations.id
-        and organization_memberships.user_id = auth.uid()::text
-    )
+    public.is_org_member(id)
   );
 
 -- Policies for organization_memberships
+drop policy if exists "Org members can view member list" on organization_memberships;
 create policy "Org members can view member list"
   on organization_memberships for select
   using (
-    exists (
-      select 1 from organization_memberships as m
-      where m.org_id = organization_memberships.org_id
-        and m.user_id = auth.uid()::text
-    )
+    user_id = auth.uid()::text or public.is_org_member(org_id)
   );
 
+drop policy if exists "Org admins can manage memberships" on organization_memberships;
 create policy "Org admins can manage memberships"
   on organization_memberships for all
   using (
-    exists (
-      select 1 from organization_memberships as m
-      where m.org_id = organization_memberships.org_id
-        and m.user_id = auth.uid()::text
-        and m.role = 'admin'
-    )
+    public.is_org_admin(org_id)
   );
