@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { OrganizationService, type OrganizationRepository } from "@/application/organizations/organization-service";
 import type { Organization, OrganizationMembership } from "@/domain/organization";
 import { planIncrementalAnalysis } from "@/infrastructure/incremental/incremental-analyzer";
@@ -124,6 +126,25 @@ describe("Workstream 11: Phase 3 Scaling Foundations", () => {
           path: "src/app/api/test.ts",
           type: "file",
           content: 'import { NextResponse } from "next/server";\nexport function GET() { return NextResponse.json({}); }',
+          isAnalyzable: true,
+        },
+      ];
+
+      const findings = await analyzer.analyze(makeFileStream(files));
+      expect(findings.some((f) => f.technicalLabel === "Supabase Client")).toBe(true);
+      expect(findings.some((f) => f.technicalLabel === "Next.js Server API")).toBe(true);
+    });
+
+    it("runs TypeScriptAstStreamingAnalyzer on disk fixture file test/fixtures/ast-sample.ts", async () => {
+      const analyzer = new TypeScriptAstStreamingAnalyzer();
+      const fixturePath = path.resolve(__dirname, "../../test/fixtures/ast-sample.ts");
+      const fixtureContent = fs.readFileSync(fixturePath, "utf8");
+
+      const files: RepositoryFile[] = [
+        {
+          path: "src/server/sample.ts",
+          type: "file",
+          content: fixtureContent,
           isAnalyzable: true,
         },
       ];
