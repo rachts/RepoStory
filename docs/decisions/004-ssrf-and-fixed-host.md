@@ -19,6 +19,7 @@ Therefore, the practical SSRF risk was significantly lower than the review sugge
    - All `owner`, `repo`, `branch`, and path parameters are strictly encoded with `encodeURIComponent`.
    - The URL constructor validates that `url.hostname === "api.github.com"` and `url.pathname.startsWith("/repos/")`.
    - Outbound requests specify `redirect: "error"` and refuse cross-origin redirects.
+     - **Reconciliation with spec (`redirect: "error"` superseding `redirect: 'manual'`)**: The review proposed `redirect: 'manual'` and inspecting redirects. In implementation, `redirect: "error"` is strictly stronger and applied consistently across all GitHub calls (including Octokit and health probes). It commands the HTTP transport to treat 3xx redirects as hard errors and abort the connection without following them, eliminating redirect-based host escapes. Additionally, any 3xx response encountered with a cross-host `Location` header is actively intercepted and rejected with `REPOSITORY_INACCESSIBLE`.
 2. IP-range blocking (CIDR filtering / private IP resolution) is intentionally **not** implemented because the API host is permanently fixed to `api.github.com` and cannot be customized by user input. Adding DNS resolution hooks and IP filtering would introduce latency and complexity without providing additional security value for a fixed public SaaS endpoint.
 
 ## Consequences
