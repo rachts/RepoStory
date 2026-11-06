@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
-import { analysisJobRunner, analysisRepository } from "@/composition/container";
+import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
 import { ownerIdFromRequest, analysisCacheKey, sessionCookieHeader } from "@/application/jobs/job-identity";
 import { opaqueId, nowIso } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
@@ -48,7 +48,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       explanationRequested: input.explanationRequested,
     });
     const job = created.job;
-    if (created.created) analysisJobRunner.enqueue(job.jobId);
+    if (created.created) {
+      await jobQueue.enqueue(job.jobId);
+      analysisJobRunner.enqueue(job.jobId);
+    }
     const response = jsonResponse({
       jobId: job.jobId,
       analysisId: job.analysisId,
