@@ -26,7 +26,8 @@ RepoStory is transitioning from a prototype tool to a production-grade multi-ten
 ### 3. Streaming Static Analysis
 - Defined a `StreamingAnalyzer` interface consuming `AsyncIterable<RepositoryFile>` to prevent unbounded heap allocations on large repositories.
 - Implemented `HeuristicStreamingAnalyzer` for low-latency rule-based detection.
-- Implemented `TypeScriptAstStreamingAnalyzer` using the TypeScript compiler API to parse ASTs incrementally and detect framework entry points, Supabase clients, and routing structures without loading full repository trees into memory.
+- Implemented `TypeScriptAstStreamingAnalyzer` using the TypeScript Compiler API (`typescript`) rather than `tree-sitter`.
+  - **Rationale for TS Compiler API over Tree-Sitter**: `tree-sitter` requires platform-specific C/C++ native bindings (`node-gyp`), introducing binary compatibility risks, Docker cross-compilation complexity, and potential build failures across Node.js/Next.js and container runtimes. In contrast, the TypeScript Compiler API is 100% pure JavaScript, already a core dependency of the project, fully compatible with Next.js Turbopack/Vercel/Docker runtimes, and provides authoritative AST parsing for modern TypeScript and JSX constructs without native compilation overhead.
 
 ### 4. Load Testing
 - Added `load/analyze.k6.js` and `load/autocannon.js` to benchmark end-to-end throughput under concurrent job submissions and status polling.
