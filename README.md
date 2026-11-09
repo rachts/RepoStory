@@ -690,6 +690,7 @@ owned by other accounts (returns `404 Not Found` to avoid leaking resource exist
 
 - `GET /api/health/live`: Liveness probe indicating process is responsive (`200 OK`).
 - `GET /api/health/ready`: Readiness probe verifying GitHub reachability, database connectivity, and job queue functionality. Returns `503 Service Unavailable` if any dependency is degraded.
+- Legacy backward-compatibility aliases: `GET /api/live` and `GET /api/ready` re-export the canonical health routes.
 - `GET /api/metrics`: Prometheus metrics endpoint protected by `METRICS_BEARER_TOKEN`. Exposes:
   - `repostory_jobs_total{status}`
   - `repostory_job_duration_seconds{stage}`
