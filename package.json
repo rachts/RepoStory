@@ -5,8 +5,10 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:worker": "tsc -p tsconfig.worker.json",
     "start": "next start",
-    "worker": "tsx src/worker.ts",
+    "worker": "node dist/worker.js",
+    "worker:dev": "tsx src/worker.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

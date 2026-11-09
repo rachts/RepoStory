@@ -3,11 +3,18 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
+# Production-only dependencies for minimal worker runtime (no devDependencies/tsx)
+FROM node:22.14.0-alpine AS prod-dependencies
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
 FROM node:22.14.0-alpine AS builder
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
+RUN npm run build:worker
 
 # Base runner image with non-root nextjs user
 FROM node:22.14.0-alpine AS runner-base
@@ -36,12 +43,11 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 CMD ["node", "server.js"]
 
-# Target 2: worker (Background job runner)
+# Target 2: worker (Background job runner without tsx or devDependencies)
 FROM runner-base AS worker
-COPY --from=dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=prod-dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
-COPY --from=builder --chown=nextjs:nodejs /app/src ./src
-COPY --from=builder --chown=nextjs:nodejs /app/tsconfig.json ./tsconfig.json
+COPY --from=builder --chown=nextjs:nodejs /app/dist ./dist
 
 USER nextjs
-CMD ["./node_modules/.bin/tsx", "src/worker.ts"]
+CMD ["node", "dist/worker.js"]
