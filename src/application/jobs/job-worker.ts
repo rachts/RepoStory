@@ -2,6 +2,7 @@ import type { JobQueue, JobQueueItem } from "@/application/jobs/job-queue";
 import type { AnalysisJobRepository } from "@/application/jobs/analysis-job-repository";
 import type { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import { opaqueId } from "@/shared/ids";
+import { logger } from "@/shared/logger";
 
 export interface JobWorkerOptions {
   workerId?: string;
@@ -95,6 +96,13 @@ export class JobWorker {
   }
 
   private async processClaimed(item: JobQueueItem): Promise<void> {
+    logger.info({
+      event: "claimed",
+      jobId: item.jobId,
+      workerId: this.workerId,
+      attempt: item.attempts,
+    }, `[Worker ${this.workerId}] claimed job ${item.jobId} (attempt ${item.attempts})`);
+
     let heartbeatActive = true;
     const heartbeatTimer = setInterval(() => {
       if (!heartbeatActive) return;

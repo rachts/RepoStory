@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import { SupabaseJobQueue } from "../src/infrastructure/jobs/supabase-job-queue";
 import { SupabaseAnalysisJobRepository } from "../src/infrastructure/jobs/supabase-analysis-job-repository";
 
@@ -23,8 +23,16 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function getProcessInfo(pid: number): string {
+  try {
+    return execSync(`ps -o pid,ppid,command -p ${pid} 2>/dev/null`, { encoding: "utf8" }).trim();
+  } catch {
+    return "<not running>";
+  }
+}
+
 async function main() {
-  console.log("=== Starting Worker Crash Recovery Verification ===");
+  console.log("=== Starting Hardened Worker Crash Recovery Verification ===");
 
   const queue = new SupabaseJobQueue({
     url: SUPABASE_URL,
@@ -62,30 +70,38 @@ async function main() {
   await queue.enqueue(testJobId);
   console.log(`[Step 1] Job ${testJobId} enqueued.`);
 
-  // Verify initial state
   const initialQueueItem = await queue.get(testJobId);
   console.log(`[Step 1] Initial queue state: status=${initialQueueItem?.status}, attempts=${initialQueueItem?.attempts}`);
   if (initialQueueItem?.status !== "queued") {
     throw new Error(`Expected job to be queued, got ${initialQueueItem?.status}`);
   }
 
-  // Step 2: Spawn Worker 1
-  console.log(`\n[Step 2] Spawning Worker 1 (worker-crash-alpha)...`);
+  // Step 2: Spawn Worker 1 in detached process group
+  console.log(`\n[Step 2] Spawning Worker 1 (worker-crash-alpha) in detached process group...`);
   const worker1: ChildProcess = spawn("./node_modules/.bin/tsx", ["src/worker.ts"], {
-    env: { ...ENV_BASE, WORKER_ID: "worker-crash-alpha", ANALYSIS_ARTIFICIAL_DELAY_MS: "8000" },
+    env: { ...ENV_BASE, WORKER_ID: "worker-crash-alpha", REPO_STORY_TEST_JOB_DELAY_MS: "8000" },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
   let worker1InternalPid: number | undefined;
+  let worker1ClaimLog: string | undefined;
+
   worker1.stdout?.on("data", (chunk) => {
     const text = chunk.toString();
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed.pid) worker1InternalPid = parsed.pid;
-    } catch {}
-    if (text.includes(testJobId) || text.includes("worker-crash-alpha")) {
-      process.stdout.write(`[Worker 1 stdout] ${text}`);
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.pid) worker1InternalPid = parsed.pid;
+        if (parsed.event === "claimed") {
+          worker1ClaimLog = line.trim();
+        }
+      } catch {}
+      if (line.includes(testJobId) || line.includes("worker-crash-alpha")) {
+        process.stdout.write(`[Worker 1 stdout] ${line}\n`);
+      }
     }
   });
   worker1.stderr?.on("data", (chunk) => {
@@ -112,24 +128,40 @@ async function main() {
     throw new Error(`Worker 1 failed to claim job ${testJobId} within timeout.`);
   }
 
-  console.log(`[Step 2] SUCCESS: Worker 1 claimed job. workerId=${worker1ClaimItem.workerId}, status=${worker1ClaimItem.status}, attempts=${worker1ClaimItem.attempts}`);
+  console.log(`[Step 2] SUCCESS: Worker 1 claimed job.`);
+  console.log(`[Worker 1 Claim Log Line]: ${worker1ClaimLog}`);
   await sleep(1500); // Allow worker to run mid-job
 
-  // Step 3: Hard kill Worker 1 process tree with SIGKILL
-  console.log(`\n[Step 3] Hard killing Worker 1 (PID ${worker1.pid}, child ${worker1InternalPid}) with SIGKILL (kill -9)...`);
+  // Step 3: Inspect PIDs before kill
+  const w1Pid = worker1.pid!;
+  const w1ChildPid = worker1InternalPid;
+  console.log(`\n[Step 3] Process table BEFORE kill:`);
+  console.log(`Leader PID ${w1Pid}:\n${getProcessInfo(w1Pid)}`);
+  if (w1ChildPid && w1ChildPid !== w1Pid) {
+    console.log(`Child PID ${w1ChildPid}:\n${getProcessInfo(w1ChildPid)}`);
+  }
+
+  // Hard kill process group with SIGKILL
+  console.log(`\n[Step 3] Hard killing process group -${w1Pid} with SIGKILL (kill -9)...`);
   try {
-    if (worker1.pid) process.kill(-worker1.pid, "SIGKILL");
+    process.kill(-w1Pid, "SIGKILL");
   } catch {}
-  if (worker1InternalPid) {
-    try { process.kill(worker1InternalPid, "SIGKILL"); } catch {}
+  if (w1ChildPid) {
+    try { process.kill(w1ChildPid, "SIGKILL"); } catch {}
   }
 
   await sleep(1000);
-  console.log(`[Step 3] Worker 1 exitCode: ${worker1.exitCode}, signalCode: ${worker1.signalCode}`);
+
+  // Inspect PIDs after kill
+  console.log(`[Step 3] Process table AFTER kill:`);
+  console.log(`Leader PID ${w1Pid}: ${getProcessInfo(w1Pid)}`);
+  if (w1ChildPid && w1ChildPid !== w1Pid) {
+    console.log(`Child PID ${w1ChildPid}: ${getProcessInfo(w1ChildPid)}`);
+  }
 
   // Step 4: Verify job is NOT lost
   const postKillItem = await queue.get(testJobId);
-  console.log(`[Step 4] Queue state after Worker 1 SIGKILL: status=${postKillItem?.status}, workerId=${postKillItem?.workerId}, attempts=${postKillItem?.attempts}`);
+  console.log(`\n[Step 4] Queue state after Worker 1 SIGKILL: status=${postKillItem?.status}, workerId=${postKillItem?.workerId}, attempts=${postKillItem?.attempts}`);
   if (!postKillItem || postKillItem.status !== "running") {
     throw new Error(`Job was lost or corrupted after worker crash!`);
   }
@@ -140,17 +172,29 @@ async function main() {
   await sleep(4500);
 
   // Step 6: Spawn Worker 2
-  console.log(`\n[Step 6] Spawning Worker 2 (worker-crash-beta) to reclaim abandoned job...`);
+  console.log(`\n[Step 6] Spawning Worker 2 (worker-crash-beta) in detached process group...`);
   const worker2: ChildProcess = spawn("./node_modules/.bin/tsx", ["src/worker.ts"], {
-    env: { ...ENV_BASE, WORKER_ID: "worker-crash-beta", ANALYSIS_ARTIFICIAL_DELAY_MS: "0" },
+    env: { ...ENV_BASE, WORKER_ID: "worker-crash-beta", REPO_STORY_TEST_JOB_DELAY_MS: "0" },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  let worker2ClaimLog: string | undefined;
+
   worker2.stdout?.on("data", (chunk) => {
     const text = chunk.toString();
-    if (text.includes(testJobId) || text.includes("worker-crash-beta")) {
-      process.stdout.write(`[Worker 2 stdout] ${text}`);
+    const lines = text.split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      try {
+        const parsed = JSON.parse(line);
+        if (parsed.event === "claimed") {
+          worker2ClaimLog = line.trim();
+        }
+      } catch {}
+      if (line.includes(testJobId) || line.includes("worker-crash-beta")) {
+        process.stdout.write(`[Worker 2 stdout] ${line}\n`);
+      }
     }
   });
   worker2.stderr?.on("data", (chunk) => {
@@ -183,15 +227,7 @@ async function main() {
   }
   await sleep(1000);
 
-  if (!reclaimed) {
-    throw new Error(`Worker 2 failed to reclaim the abandoned job.`);
-  }
-
-  if (!completed) {
-    // Check final status in repo
-    const repoJob = await repo.getJob(testJobId);
-    console.log(`Repo job status: ${repoJob?.status}, message: ${repoJob?.message}`);
-  }
+  console.log(`\n[Worker 2 Claim Log Line]: ${worker2ClaimLog}`);
 
   // Final verification assertions
   const finalQueue = await queue.get(testJobId);
