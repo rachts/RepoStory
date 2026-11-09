@@ -302,7 +302,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       },
       retry: {
         retries: 0,
-        doNotRetry: ["400", "401", "403", "404", "422", "429", "500", "502", "503", "504"],
+        doNotRetry: [400, 401, 403, 404, 422, 429, 500, 502, 503, 504],
       },
     });
   }
@@ -346,18 +346,19 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         const octokitResult = await this.octokit.request(`GET ${url.toString()}`, {
           headers,
           request: {
-            signal: fetchOptions.signal,
+            signal: fetchOptions.signal ?? undefined,
             redirect: "error",
           },
         });
         octokitStatus = octokitResult.status;
         octokitHeaders = octokitResult.headers as Record<string, string>;
         octokitBody = typeof octokitResult.data === "string" ? octokitResult.data : JSON.stringify(octokitResult.data);
-      } catch (error: any) {
-        if (error && typeof error === "object" && "status" in error && error.response) {
-          octokitStatus = Number(error.status);
-          octokitHeaders = (error.response.headers ?? {}) as Record<string, string>;
-          octokitBody = typeof error.response.data === "string" ? error.response.data : JSON.stringify(error.response.data ?? {});
+      } catch (error: unknown) {
+        if (error && typeof error === "object" && "status" in error && "response" in error) {
+          const resp = (error as { status: unknown; response?: { headers?: unknown; data?: unknown } }).response;
+          octokitStatus = Number((error as { status: unknown }).status);
+          octokitHeaders = (resp?.headers ?? {}) as Record<string, string>;
+          octokitBody = typeof resp?.data === "string" ? resp.data : JSON.stringify(resp?.data ?? {});
         } else {
           throw error;
         }

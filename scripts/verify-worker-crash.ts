@@ -6,7 +6,7 @@ const SUPABASE_URL = "http://localhost:3002";
 const SECRET_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoibWFjYm9va2FpciIsInN1YiI6InRlc3QtYWRtaW4ifQ.AedVMsBfk5ry6WRu2WHhj_s1IdvfzaMYUUWBiaeqh1s";
 
-const ENV_BASE = {
+const ENV_BASE: NodeJS.ProcessEnv = {
   ...process.env,
   NODE_ENV: "production",
   ALLOW_IN_MEMORY_QUEUE: "false",
@@ -49,13 +49,14 @@ async function main() {
     branch: "main",
     cacheKey: `cache-${testJobId}`,
     status: "queued",
-    stage: "queued",
+    stage: "validating-input",
     progress: 0,
     message: "Queued for crash verification",
     createdAt: now,
     updatedAt: now,
     expiresAt: new Date(Date.now() + 86400000).toISOString(),
     retryCount: 0,
+    explanationRequested: false,
   });
 
   await queue.enqueue(testJobId);
@@ -200,7 +201,7 @@ async function main() {
   console.log(`Queue item: status=${finalQueue?.status}, attempts=${finalQueue?.attempts}, workerId=${finalQueue?.workerId}`);
   console.log(`Repo job: status=${finalRepoJob?.status}, stage=${finalRepoJob?.stage}, progress=${finalRepoJob?.progress}`);
 
-  if (finalQueue?.status !== "completed" && finalRepoJob?.status !== "completed") {
+  if (finalQueue?.status !== "succeeded" && finalRepoJob?.status !== "completed") {
     throw new Error(`Expected job to complete successfully after recovery.`);
   }
 

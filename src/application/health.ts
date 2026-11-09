@@ -36,8 +36,8 @@ export async function checkReadiness(overrides?: {
         request: { signal: AbortSignal.timeout(3000) },
       });
       github = res.status === 200;
-    } catch (e: any) {
-      const status = e?.status;
+    } catch (e: unknown) {
+      const status = typeof e === "object" && e !== null && "status" in e ? (e as { status?: unknown }).status : undefined;
       github = status === 403 || status === 429;
       if (!github) errors.github = String(e);
     }
