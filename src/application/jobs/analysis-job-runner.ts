@@ -129,8 +129,8 @@ export class AnalysisJobRunner {
       if (!current || current.status === "cancelled" || current.cancellationRequested) return;
       const analysisId = current.analysisId ?? opaqueId("analysis");
       await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", updatedAt: nowIso() });
-      if (process.env.ANALYSIS_ARTIFICIAL_DELAY_MS) {
-        const delay = Number(process.env.ANALYSIS_ARTIFICIAL_DELAY_MS);
+      if (process.env.REPO_STORY_TEST_JOB_DELAY_MS) {
+        const delay = Number(process.env.REPO_STORY_TEST_JOB_DELAY_MS);
         if (delay > 0) {
           await new Promise((resolve) => setTimeout(resolve, delay));
         }
