@@ -55,8 +55,12 @@ export const jobQueue: JobQueue = globalContainer.repoStoryJobQueue ?? (
 );
 globalContainer.repoStoryJobQueue = jobQueue;
 
-export const analysisJobRunner = globalContainer.repoStoryJobRunner ?? new AnalysisJobRunner(analysisRepository, repositoryProvider);
-globalContainer.repoStoryJobRunner = analysisJobRunner;
+export const analysisJobRunner =
+  (process.env.NODE_ENV === "production" ? globalContainer.repoStoryJobRunner : undefined) ??
+  new AnalysisJobRunner(analysisRepository, repositoryProvider);
+if (process.env.NODE_ENV === "production") {
+  globalContainer.repoStoryJobRunner = analysisJobRunner;
+}
 
 const MAX_ACTIVE_ANALYSES = 2;
 let activeAnalyses = 0;

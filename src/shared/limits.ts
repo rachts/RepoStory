@@ -9,7 +9,7 @@ export const DEFAULT_LIMITS = {
   maxTreeEntries: 10_000,
   maxImportCandidates: 256,
   maxConcurrentContentRequests: 6,
-  maxAnalysisMs: 30_000,
+  maxAnalysisMs: 60_000,
 } as const;
 export const DEFAULT_STORE_LIMITS = {
   maxAnalyses: 100,

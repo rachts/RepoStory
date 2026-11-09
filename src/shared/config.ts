@@ -39,6 +39,7 @@ export const serverConfig = {
   maxConcurrentJobs: positiveInteger(process.env.REPO_STORY_MAX_CONCURRENT_JOBS, 2),
   maxJobRetries: positiveInteger(process.env.REPO_STORY_MAX_JOB_RETRIES, 2),
   jobRetryBackoffMs: positiveInteger(process.env.REPO_STORY_JOB_RETRY_BACKOFF_MS, 250),
+  maxAnalysisMs: positiveInteger(process.env.REPO_STORY_MAX_ANALYSIS_MS, DEFAULT_LIMITS.maxAnalysisMs),
   jobTtlMs: positiveInteger(process.env.REPO_STORY_JOB_TTL_MS, DEFAULT_LIMITS.maxAnalysisMs * 20),
   analyzerVersion: process.env.REPO_STORY_ANALYZER_VERSION?.trim() || "phase-async-1",
   configVersion: process.env.REPO_STORY_CONFIG_VERSION?.trim() || "1",
