@@ -89,4 +89,24 @@ describe("Workstream 4: Input and URL hardening", () => {
       }
     });
   });
+
+  describe("Health check probe path validation", () => {
+    it("allows the valid safe probe path /zen", () => {
+      const url = buildSafeGitHubApiUrl("/zen");
+      expect(url.toString()).toBe("https://api.github.com/zen");
+      expect(url.hostname).toBe("api.github.com");
+      expect(url.pathname).toBe("/zen");
+    });
+
+    it("rejects probe request when host is changed or protocol/authority is injected", () => {
+      expect(() => buildSafeGitHubApiUrl("https://evil.com/zen")).toThrow(/must not contain a scheme or authority/i);
+      expect(() => buildSafeGitHubApiUrl("//evil.com/zen")).toThrow(/must not contain a scheme or authority/i);
+    });
+
+    it("rejects probe request when path is hostile or unauthorized", () => {
+      expect(() => buildSafeGitHubApiUrl("/admin")).toThrow(/must start with \/repos\/ or be \/zen/i);
+      expect(() => buildSafeGitHubApiUrl("/users")).toThrow(/must start with \/repos\/ or be \/zen/i);
+      expect(() => buildSafeGitHubApiUrl("../internal")).toThrow(/must start with \/repos\/ or be \/zen/i);
+    });
+  });
 });

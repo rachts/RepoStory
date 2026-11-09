@@ -5,24 +5,47 @@ import { AppError } from "@/domain/errors";
  * Defense-in-depth: enforces that host is always api.github.com and path begins with /repos/.
  */
 export function buildSafeGitHubApiUrl(
-  owner: string,
-  repo: string,
+  pathOrOwner: string,
+  repo?: string,
   pathSuffix = "",
   searchParams?: Record<string, string>,
 ): URL {
-  const encodedOwner = encodeURIComponent(owner);
-  const encodedRepo = encodeURIComponent(repo);
-  const cleanSuffix = pathSuffix.startsWith("/") ? pathSuffix : (pathSuffix ? `/${pathSuffix}` : "");
-
   let url: URL;
-  try {
-    url = new URL(`https://api.github.com/repos/${encodedOwner}/${encodedRepo}${cleanSuffix}`);
-  } catch {
-    throw new AppError({
-      code: "INVALID_URL",
-      message: "Failed to construct valid GitHub API URL.",
-      retryable: false,
-    });
+
+  if (repo === undefined) {
+    // Single path mode (e.g. buildSafeGitHubApiUrl("/zen"))
+    if (pathOrOwner.includes("://") || pathOrOwner.startsWith("//")) {
+      throw new AppError({
+        code: "INVALID_URL",
+        message: "Path must not contain a scheme or authority.",
+        retryable: false,
+      });
+    }
+    const rawPath = pathOrOwner.startsWith("/") ? pathOrOwner : `/${pathOrOwner}`;
+    try {
+      url = new URL(`https://api.github.com${rawPath}`);
+    } catch {
+      throw new AppError({
+        code: "INVALID_URL",
+        message: "Failed to construct valid GitHub API URL.",
+        retryable: false,
+      });
+    }
+  } else {
+    // Standard owner/repo mode
+    const encodedOwner = encodeURIComponent(pathOrOwner);
+    const encodedRepo = encodeURIComponent(repo);
+    const cleanSuffix = pathSuffix.startsWith("/") ? pathSuffix : (pathSuffix ? `/${pathSuffix}` : "");
+
+    try {
+      url = new URL(`https://api.github.com/repos/${encodedOwner}/${encodedRepo}${cleanSuffix}`);
+    } catch {
+      throw new AppError({
+        code: "INVALID_URL",
+        message: "Failed to construct valid GitHub API URL.",
+        retryable: false,
+      });
+    }
   }
 
   if (url.hostname.toLowerCase() !== "api.github.com") {
@@ -33,10 +56,10 @@ export function buildSafeGitHubApiUrl(
     });
   }
 
-  if (!url.pathname.startsWith("/repos/")) {
+  if (!url.pathname.startsWith("/repos/") && url.pathname !== "/zen") {
     throw new AppError({
       code: "INVALID_URL",
-      message: "Target pathname must start with /repos/.",
+      message: "Target pathname must start with /repos/ or be /zen.",
       retryable: false,
     });
   }
