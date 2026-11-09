@@ -46,57 +46,44 @@ Verified relations:
 
 ---
 
-## 3. Concurrency Claim Race Test (10 Concurrent Workers)
+## 3. High-Contention Barrier Tests (PostgreSQL 16)
 
-### Test Description
-10 queued jobs (`job-1` to `job-10`) were inserted into `repo_story_job_queue`. 10 distinct worker processes were launched in parallel, each repeatedly claiming available jobs via `SELECT job_id FROM claim_queue_job('worker-' || w, 120);` until the queue was exhausted.
+The contention harness (`scripts/verify-contention.sh`) executes two high-contention test scenarios with atomic `claim_queue_job` via `FOR UPDATE SKIP LOCKED`.
 
-### Test Execution
-```bash
-#!/bin/bash
-set -e
-PSQL="psql -d repostory_test -qtAX"
-
-# Clean table and insert 10 queued jobs
-$PSQL -c "TRUNCATE TABLE repo_story_job_queue;"
-for i in $(seq 1 10); do
-  $PSQL -c "INSERT INTO repo_story_job_queue (id, job_id, status, attempts, max_attempts, available_at, created_at, updated_at) VALUES ('queue-job-$i', 'job-$i', 'queued', 0, 3, NOW(), NOW(), NOW());"
-done
-
-# Spawn 10 concurrent workers
-for w in $(seq 1 10); do
-  (
-    while true; do
-      res=$($PSQL -c "SELECT job_id FROM claim_queue_job('worker-$w', 120);")
-      if [ -n "$res" ]; then
-        echo "worker-$w claimed $res" >> /tmp/claimed_jobs.log
-      else
-        break
-      fi
-    done
-  ) &
-done
-wait
-```
-
-### Actual Output
+### Test 1: 1 Single Job, 10 Concurrent Workers Behind Synchronized Barrier
+- **Setup**: 10 distinct worker processes are spawned and wait on a synchronized filesystem barrier. Upon barrier release, all 10 workers simultaneously fire `claim_queue_job('worker-' || w, 120)` to claim the single available job.
+- **Audit Verification**:
 ```text
-=== Concurrency Test Finished ===
-Total claims recorded: 10
-worker-1 claimed job-3
-worker-10 claimed job-10
-worker-2 claimed job-2
-worker-3 claimed job-6
-worker-4 claimed job-4
-worker-5 claimed job-8
-worker-6 claimed job-1
-worker-7 claimed job-5
-worker-8 claimed job-7
-worker-9 claimed job-9
-Distinct jobs claimed: 10
+Test 1 Claims Recorded in claim_audit_log:
+worker-2|job-single-contention|2026-11-09 21:56:56.170203+05:30
+
+Duplicate Check Query:
+SELECT job_id, count(*) FROM public.claim_audit_log GROUP BY job_id HAVING count(*) > 1;
+Zero duplicate rows returned (GROUP BY job_id HAVING count(*) > 1 is empty).
+Total claims for 1 job: 1 (expected: 1)
 ```
 
-**Verification Result:** Exactly 10 jobs claimed, exactly 1 worker per job, 0 double-claims, and 0 deadlocks.
+### Test 2: 50 Queued Jobs, 5 Concurrent Worker Processes
+- **Setup**: 50 queued jobs inserted into `repo_story_job_queue`. 5 worker processes execute claims concurrently until the queue is completely drained.
+- **Audit Verification**:
+```text
+Total claims recorded for 50 jobs: 50
+Total distinct jobs claimed: 50
+Claims per worker distribution:
+worker-1: 10
+worker-2: 10
+worker-3: 10
+worker-4: 10
+worker-5: 10
+
+Duplicate Check Query:
+SELECT job_id, count(*) FROM public.claim_audit_log GROUP BY job_id HAVING count(*) > 1;
+Zero duplicate rows returned (GROUP BY job_id HAVING count(*) > 1 is empty).
+
+Maximum attempts across all 50 jobs: 1 (expected: 1)
+```
+
+**Verification Result**: In both extreme contention scenarios, zero double-claims occurred, zero deadlocks occurred, and all jobs completed with exactly `attempts = 1`.
 
 ---
 
