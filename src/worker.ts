@@ -1,5 +1,5 @@
 // Register module alias resolution before importing @/... modules
-require("./shared/alias-register");
+import "./shared/alias-register";
 
 import { assertProductionGuards } from "@/config/production-guards";
 
