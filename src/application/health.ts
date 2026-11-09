@@ -1,5 +1,6 @@
 import { analysisRepository, jobQueue } from "@/composition/container";
 import { Octokit } from "@octokit/rest";
+import { buildSafeGitHubApiUrl } from "@/infrastructure/providers/github-url-builder";
 
 export interface ReadinessCheckResult {
   ready: boolean;
@@ -30,8 +31,9 @@ export async function checkReadiness(overrides?: {
     }
   } else {
     try {
+      const zenUrl = buildSafeGitHubApiUrl("/zen");
       const octokit = new Octokit({ request: { redirect: "error" } });
-      const res = await octokit.request("GET https://api.github.com/zen", {
+      const res = await octokit.request(`GET ${zenUrl.toString()}`, {
         headers: { "user-agent": "RepoStory-HealthCheck" },
         request: { signal: AbortSignal.timeout(3000) },
       });
