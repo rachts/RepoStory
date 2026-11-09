@@ -44,4 +44,4 @@ COPY --from=builder --chown=nextjs:nodejs /app/src ./src
 COPY --from=builder --chown=nextjs:nodejs /app/tsconfig.json ./tsconfig.json
 
 USER nextjs
-CMD ["npx", "tsx", "src/worker.ts"]
+CMD ["./node_modules/.bin/tsx", "src/worker.ts"]
