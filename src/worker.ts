@@ -8,11 +8,15 @@ initSentry();
 const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
 logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
+const pollIntervalMs = process.env.WORKER_POLL_INTERVAL_MS ? Number(process.env.WORKER_POLL_INTERVAL_MS) : 1_000;
+const heartbeatIntervalMs = process.env.WORKER_HEARTBEAT_INTERVAL_MS ? Number(process.env.WORKER_HEARTBEAT_INTERVAL_MS) : 15_000;
+const concurrency = process.env.WORKER_CONCURRENCY ? Number(process.env.WORKER_CONCURRENCY) : 2;
+
 const worker = new JobWorker(jobQueue, analysisRepository, analysisJobRunner, {
   workerId,
-  pollIntervalMs: 1_000,
-  heartbeatIntervalMs: 15_000,
-  concurrency: 2,
+  pollIntervalMs,
+  heartbeatIntervalMs,
+  concurrency,
 });
 
 worker.start();
