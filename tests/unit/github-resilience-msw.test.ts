@@ -200,4 +200,129 @@ describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
     // EXACT acceptance requirement: makes ZERO content requests!
     expect(contentRequestCount).toBe(0);
   });
+
+  it("follows safe 301/302 redirects within api.github.com (e.g. org/repo rename)", async () => {
+    server.use(
+      http.get("https://api.github.com/repos/facebook/react", () => {
+        return new HttpResponse(null, {
+          status: 301,
+          headers: {
+            Location: "https://api.github.com/repositories/10270250",
+          },
+        });
+      }),
+      http.get("https://api.github.com/repositories/10270250", () => {
+        return HttpResponse.json(mockMeta, {
+          headers: {
+            "x-ratelimit-remaining": "4999",
+            "x-ratelimit-reset": "2000000000",
+          },
+        });
+      }),
+      http.get("https://api.github.com/repos/facebook/react/commits/:branch", () => {
+        return HttpResponse.json(mockCommit);
+      }),
+      http.get("https://api.github.com/repos/facebook/react/git/trees/:branch", () => {
+        return HttpResponse.json(mockTree);
+      }),
+      http.get("https://api.github.com/repos/facebook/react/contents/:path*", () => {
+        return HttpResponse.json({
+          content: mockContentBase64,
+          encoding: "base64",
+        });
+      }),
+    );
+
+    const provider = new GitHubPublicRepositoryProvider({
+      fetchImpl: fetch,
+      token: "test-token",
+    });
+
+    const result = await provider.getSnapshot({
+      owner: "facebook",
+      name: "react",
+      url: "https://github.com/facebook/react",
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.value.repository.name).toBe("react");
+    }
+  });
+
+  it("rejects redirects that target an unauthorized external host", async () => {
+    server.use(
+      http.get("https://api.github.com/repos/attacker/malicious", () => {
+        return new HttpResponse(null, {
+          status: 301,
+          headers: {
+            Location: "https://evil.attacker.com/steal-creds",
+          },
+        });
+      }),
+    );
+
+    const provider = new GitHubPublicRepositoryProvider({
+      fetchImpl: fetch,
+      token: "test-token",
+    });
+
+    const result = await provider.getSnapshot({
+      owner: "attacker",
+      name: "malicious",
+      url: "https://github.com/attacker/malicious",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("REPOSITORY_INACCESSIBLE");
+      expect(result.error.message).toMatch(/unauthorized external host/i);
+    }
+  });
+
+  it("aborts when redirects exceed maxRedirects", async () => {
+    server.use(
+      http.get("https://api.github.com/repos/loop/repo", () => {
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { Location: "https://api.github.com/repositories/loop-1" },
+        });
+      }),
+      http.get("https://api.github.com/repositories/loop-1", () => {
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { Location: "https://api.github.com/repositories/loop-2" },
+        });
+      }),
+      http.get("https://api.github.com/repositories/loop-2", () => {
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { Location: "https://api.github.com/repositories/loop-3" },
+        });
+      }),
+      http.get("https://api.github.com/repositories/loop-3", () => {
+        return new HttpResponse(null, {
+          status: 302,
+          headers: { Location: "https://api.github.com/repositories/loop-4" },
+        });
+      }),
+    );
+
+    const provider = new GitHubPublicRepositoryProvider({
+      fetchImpl: fetch,
+      token: "test-token",
+    });
+
+    const result = await provider.getSnapshot({
+      owner: "loop",
+      name: "repo",
+      url: "https://github.com/loop/repo",
+    });
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("REPOSITORY_INACCESSIBLE");
+      expect(result.error.message).toMatch(/too many times/i);
+    }
+  });
 });
