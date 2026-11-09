@@ -5,6 +5,8 @@ import { checkReadiness } from "@/application/health";
 import { GET as metricsGet } from "@/app/api/metrics/route";
 import { GET as readyGet } from "@/app/api/health/ready/route";
 import { GET as liveGet } from "@/app/api/health/live/route";
+import { GET as readyAliasGet } from "@/app/api/ready/route";
+import { GET as liveAliasGet } from "@/app/api/live/route";
 
 describe("Workstream 7: Observability", () => {
   describe("Pino structured logger & token redaction", () => {
@@ -143,6 +145,18 @@ describe("Workstream 7: Observability", () => {
       expect([200, 503]).toContain(res.status);
       const json = await res.json();
       expect(["healthy", "unhealthy"]).toContain(json.status);
+    });
+
+    it("legacy aliases (/api/live and /api/ready) correctly re-export canonical probes", async () => {
+      const liveRes = liveAliasGet();
+      expect(liveRes.status).toBe(200);
+      const liveJson = await liveRes.json();
+      expect(liveJson.status).toBe("ok");
+
+      const readyRes = await readyAliasGet();
+      expect([200, 503]).toContain(readyRes.status);
+      const readyJson = await readyRes.json();
+      expect(["healthy", "unhealthy"]).toContain(readyJson.status);
     });
   });
 });
