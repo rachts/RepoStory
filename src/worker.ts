@@ -1,3 +1,6 @@
+// Register module alias resolution before importing @/... modules
+require("./shared/alias-register");
+
 import { jobQueue, analysisRepository, analysisJobRunner } from "@/composition/container";
 import { JobWorker } from "@/application/jobs/job-worker";
 import { logger } from "@/shared/logger";
