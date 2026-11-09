@@ -283,7 +283,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const mergedInit: RequestInit = {
         ...init,
-        redirect: "error",
+        redirect: "manual",
         cache: "no-store",
       };
       return this.fetchImpl(input, mergedInit);
@@ -307,9 +307,12 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     });
   }
 
-  private async dispatch(url: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget): Promise<Response> {
+  private async dispatch(initialUrl: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget): Promise<Response> {
     const maxAttempts = 3;
     let attempt = 0;
+    let currentUrl = initialUrl;
+    let redirectCount = 0;
+    const maxRedirects = 3;
 
     while (true) {
       attempt += 1;
@@ -317,7 +320,12 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       this.circuitBreaker.check();
 
       // Ensure the URL is valid and targets api.github.com
-      if (url.hostname.toLowerCase() !== "api.github.com" || !url.pathname.startsWith("/repos/")) {
+      if (
+        currentUrl.hostname.toLowerCase() !== "api.github.com" ||
+        (!currentUrl.pathname.startsWith("/repos/") &&
+          !currentUrl.pathname.startsWith("/repositories/") &&
+          currentUrl.pathname !== "/zen")
+      ) {
         throw new AppError({
           code: "REPOSITORY_INACCESSIBLE",
           message: "GitHub URL must target api.github.com/repos/.",
@@ -343,11 +351,11 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       let octokitBody: string;
 
       try {
-        const octokitResult = await this.octokit.request(`GET ${url.toString()}`, {
+        const octokitResult = await this.octokit.request(`GET ${currentUrl.toString()}`, {
           headers,
           request: {
             signal: fetchOptions.signal ?? undefined,
-            redirect: "error",
+            redirect: "manual",
           },
         });
         octokitStatus = octokitResult.status;
@@ -378,22 +386,47 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         response.headers.get("x-ratelimit-reset"),
       );
 
+      // Handle 3xx redirects securely (allow api.github.com redirects, reject cross-host escapes)
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
-        if (location) {
-          try {
-            const locUrl = new URL(location);
-            if (locUrl.hostname.toLowerCase() !== "api.github.com") {
-              throw new AppError({
-                code: "REPOSITORY_INACCESSIBLE",
-                message: "GitHub redirected to an unauthorized external host.",
-                retryable: false,
-              });
-            }
-          } catch (e) {
-            if (e instanceof AppError) throw e;
-          }
+        if (!location) {
+          throw new AppError({
+            code: "REPOSITORY_INACCESSIBLE",
+            message: "GitHub redirect response missing Location header.",
+            retryable: false,
+          });
         }
+
+        let locUrl: URL;
+        try {
+          locUrl = new URL(location, currentUrl);
+        } catch {
+          throw new AppError({
+            code: "REPOSITORY_INACCESSIBLE",
+            message: "GitHub redirected to an invalid URL.",
+            retryable: false,
+          });
+        }
+
+        if (locUrl.hostname.toLowerCase() !== "api.github.com") {
+          throw new AppError({
+            code: "REPOSITORY_INACCESSIBLE",
+            message: "GitHub redirected to an unauthorized external host.",
+            retryable: false,
+          });
+        }
+
+        if (redirectCount >= maxRedirects) {
+          throw new AppError({
+            code: "REPOSITORY_INACCESSIBLE",
+            message: "GitHub redirected too many times.",
+            retryable: false,
+          });
+        }
+
+        redirectCount += 1;
+        currentUrl = locUrl;
+        continue;
       }
 
       const isRateLimited = response.status === 429 || (response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.get("retry-after")));
