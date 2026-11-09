@@ -81,6 +81,13 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: SupabaseOptions) {
+    if (process.env.NODE_ENV === "production" && (!options.url || !options.secretKey)) {
+      throw new AppError({
+        code: "INVALID_CONFIGURATION",
+        message: "[RepoStory Config Error] SUPABASE_URL and SUPABASE_SECRET_KEY are required for SupabaseAnalysisJobRepository in production.",
+        retryable: false,
+      });
+    }
     this.baseUrl = `${options.url?.replace(/\/$/, "") ?? ""}/rest/v1`;
     this.secretKey = options.secretKey ?? "";
     this.maxAnalyses = options.maxAnalyses ?? 100;

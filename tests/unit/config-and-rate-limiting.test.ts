@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateEnv } from "@/config/env";
+import { assertProductionGuards } from "@/config/production-guards";
 import { InMemoryRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
 
 describe("Workstream 8: Configuration validation and inbound rate limiting", () => {
@@ -60,6 +61,39 @@ describe("Workstream 8: Configuration validation and inbound rate limiting", () 
         expect(result.env.ANALYSIS_DAILY_QUOTA).toBe(5);
         expect(result.env.GROQ_MODEL).toBe("openai/gpt-oss-120b");
       }
+    });
+  });
+
+  describe("Production start guards (fail-fast assertions)", () => {
+    it("refuses to start in production if REPO_STORY_JOB_STORE is unset", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          // REPO_STORY_JOB_STORE unset
+        }, false);
+      }).toThrow(/In production, REPO_STORY_JOB_STORE must be explicitly set/);
+    });
+
+    it("refuses to start in production if ALLOW_IN_MEMORY_QUEUE is unset when running in-memory queue", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          REPO_STORY_JOB_STORE: "memory",
+          // ALLOW_IN_MEMORY_QUEUE unset
+          ALLOW_IN_MEMORY_STORE: "true",
+        }, false);
+      }).toThrow(/InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true/);
+    });
+
+    it("starts without error in production when REPO_STORY_JOB_STORE=supabase and Supabase credentials are present", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          REPO_STORY_JOB_STORE: "supabase",
+          SUPABASE_URL: "https://xyz.supabase.co",
+          SUPABASE_SECRET_KEY: "prod-secret-key-123",
+        }, false);
+      }).not.toThrow();
     });
   });
 

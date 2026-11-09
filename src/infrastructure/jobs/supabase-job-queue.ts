@@ -17,6 +17,13 @@ export class SupabaseJobQueue implements JobQueue {
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: SupabaseJobQueueOptions = {}) {
+    if (process.env.NODE_ENV === "production" && (!options.url || !options.secretKey)) {
+      throw new AppError({
+        code: "INVALID_CONFIGURATION",
+        message: "[RepoStory Config Error] SUPABASE_URL and SUPABASE_SECRET_KEY are required for SupabaseJobQueue in production.",
+        retryable: false,
+      });
+    }
     this.baseUrl = `${options.url?.replace(/\/$/, "") ?? ""}/rest/v1`;
     this.secretKey = options.secretKey ?? "";
     this.heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 120_000;
