@@ -21,7 +21,11 @@ const globalContainer = globalThis as typeof globalThis & {
   repoStoryJobQueue?: JobQueue;
 };
 
-export const analysisStore = globalContainer.repoStoryStore ?? new InMemoryAnalysisStore({ maxAnalyses: serverConfig.maxAnalyses, ttlMs: serverConfig.analysisTtlMs });
+export const analysisStore = globalContainer.repoStoryStore ?? new InMemoryAnalysisStore({
+  maxAnalyses: serverConfig.maxAnalyses,
+  ttlMs: serverConfig.analysisTtlMs,
+  isScratch: serverConfig.jobStoreMode !== "memory",
+});
 globalContainer.repoStoryStore = analysisStore;
 
 export const repositoryProvider = new GitHubPublicRepositoryProvider({
@@ -39,7 +43,11 @@ globalContainer.repoStoryAnalysisRepository = analysisRepository;
 
 export const jobQueue: JobQueue = globalContainer.repoStoryJobQueue ?? (
   serverConfig.queueMode === "supabase"
-    ? new SupabaseJobQueue({ url: serverConfig.supabaseUrl, secretKey: serverConfig.supabaseSecretKey })
+    ? new SupabaseJobQueue({
+        url: serverConfig.supabaseUrl,
+        secretKey: serverConfig.supabaseSecretKey,
+        heartbeatTimeoutMs: process.env.WORKER_HEARTBEAT_TIMEOUT_MS ? Number(process.env.WORKER_HEARTBEAT_TIMEOUT_MS) : 120_000,
+      })
     : new InMemoryJobQueue()
 );
 globalContainer.repoStoryJobQueue = jobQueue;
