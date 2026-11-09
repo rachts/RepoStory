@@ -13,6 +13,9 @@ import { SupabaseJobQueue } from "@/infrastructure/jobs/supabase-job-queue";
 import { AppError } from "@/domain/errors";
 import type { RepositoryProvider, RepositoryReference } from "@/domain/repository";
 import { err, type Result } from "@/shared/result";
+import { assertProductionGuards } from "@/config/production-guards";
+
+assertProductionGuards();
 
 const globalContainer = globalThis as typeof globalThis & {
   repoStoryStore?: InMemoryAnalysisStore;
