@@ -17,7 +17,7 @@ async function createMockTarGz(files: Record<string, string>, rootDir = "org-rep
 
   const chunks: Buffer[] = [];
   return new Promise<Buffer>((resolve, reject) => {
-    pack.on("data", (chunk: Buffer) => chunks.push(chunk));
+    pack.on("data", (chunk: unknown) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array)));
     pack.on("end", () => {
       resolve(gzipSync(Buffer.concat(chunks)));
     });
@@ -48,6 +48,7 @@ const mockContentBase64 = Buffer.from("console.log('hello');").toString("base64"
 
 describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
   let contentRequestCount = 0;
+  let treeRequestCount = 0;
   let simulatedFailuresRemaining = 0;
   let simulatedFailureStatus = 429;
   let tokensUsed: string[] = [];
@@ -73,6 +74,7 @@ describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
     http.get("https://api.github.com/repos/:owner/:repo/git/trees/:branch", ({ request }) => {
       const auth = request.headers.get("authorization");
       if (auth) tokensUsed.push(auth);
+      treeRequestCount += 1;
       return HttpResponse.json(mockTree);
     }),
 
@@ -112,6 +114,7 @@ describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
   afterEach(() => {
     server.resetHandlers();
     contentRequestCount = 0;
+    treeRequestCount = 0;
     simulatedFailuresRemaining = 0;
     tokensUsed = [];
   });
@@ -217,6 +220,43 @@ describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
     });
     expect(secondResult.ok).toBe(true);
     // EXACT acceptance requirement: makes ZERO content requests!
+    expect(contentRequestCount).toBe(0);
+  });
+
+  it("second analysis of the exact same commit makes zero content and zero tree requests", async () => {
+    const cacheStore = new InMemoryCacheStore();
+    const provider = new GitHubPublicRepositoryProvider({
+      cacheStore,
+      fetchImpl: fetch,
+      token: "cache-test-token",
+    });
+
+    const commitSha = "c0ffee1234567890abcdef";
+
+    // First analysis: fetches metadata, tree, and content
+    const firstResult = await provider.getSnapshot({
+      owner: "org",
+      name: "repo",
+      branch: commitSha,
+      url: "https://github.com/org/repo",
+    });
+    expect(firstResult.ok).toBe(true);
+    expect(treeRequestCount).toBe(1);
+
+    // Reset counters
+    treeRequestCount = 0;
+    contentRequestCount = 0;
+
+    // Second analysis of the exact same commit: tree and content should hit cache
+    const secondResult = await provider.getSnapshot({
+      owner: "org",
+      name: "repo",
+      branch: commitSha,
+      url: "https://github.com/org/repo",
+    });
+    expect(secondResult.ok).toBe(true);
+    // EXACT acceptance requirement: makes ZERO tree and ZERO content requests!
+    expect(treeRequestCount).toBe(0);
     expect(contentRequestCount).toBe(0);
   });
 

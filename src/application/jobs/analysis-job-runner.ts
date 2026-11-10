@@ -139,6 +139,7 @@ export class AnalysisJobRunner {
       const result = await runAnalysis(repositoryReference(current), this.provider, scratchStore, {
         analysisId,
         signal: controller.signal,
+        cacheStore: this.provider.cacheStore,
         onProgress: (progress) => {
           const mapped = progressFor(progress);
           void this.repository.updateJob(jobId, { ...mapped, analysisId, updatedAt: nowIso() });

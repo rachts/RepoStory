@@ -955,6 +955,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         url: repositoryUrl,
         defaultBranch: metadata.default_branch,
         selectedBranch: branch,
+        commitSha,
         ...(typeof metadata.description === "string" ? { description: redactSecrets(metadata.description) } : {}),
         sizeBytes: typeof metadata.size === "number" && Number.isSafeInteger(metadata.size) && metadata.size >= 0 && metadata.size <= Number.MAX_SAFE_INTEGER / 1024 ? metadata.size * 1024 : 0,
         fileCount: files.length,
