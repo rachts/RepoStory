@@ -135,11 +135,3 @@ export function analyzeAuthentication(files: RepositoryFile[], budget?: Analysis
   budget?.check();
   return findings;
 }
-
-export const analyzeAuth = analyzeAuthentication;
-export const analyzeAuthenticationEvidence = analyzeAuthentication;
-export const detectAuthentication = analyzeAuthentication;
-export const findAuthenticationEvidence = analyzeAuthentication;
-export const analyzeAuthEvidence = analyzeAuthentication;
-export const detectAuth = analyzeAuthentication;
-export const detectAuthenticationEvidence = analyzeAuthentication;

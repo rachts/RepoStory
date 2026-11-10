@@ -406,9 +406,3 @@ export function analyzeApiRoutes(files: RepositoryFile[], budget?: AnalysisBudge
   budget?.check();
   return sortedFindings;
 }
-
-export const detectApiRoutes = analyzeApiRoutes;
-export const analyzeRoutes = analyzeApiRoutes;
-export const findApiRoutes = analyzeApiRoutes;
-export const analyzeApiRouteFindings = analyzeApiRoutes;
-export const detectRoutes = analyzeApiRoutes;
