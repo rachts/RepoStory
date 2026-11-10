@@ -53,3 +53,4 @@ RepoStory originally fetched individual repository files via GitHub's Contents A
 - Content retrieval drops from O(N) requests to O(1) request (1 archive request) for any repository size.
 - `facebook/react` analysis completes well inside timeout limits without burning token quotas.
 - Memory consumption remains strictly bounded during large archive processing.
+
