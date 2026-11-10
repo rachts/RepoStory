@@ -110,14 +110,13 @@ jobs:
           node-version: 22.14.0
           cache: npm
       - run: npm ci
-      - name: Apply DB Migrations & Start Proxy
+      - name: Start PostgREST proxy
         run: |
           sudo apt-get install -y postgresql-client
-          PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -f supabase/migrations/001_repo_story.sql
-          PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -f supabase/migrations/002_job_queue.sql
-          PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -f supabase/migrations/003_auth_and_rls.sql
-          PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -f supabase/migrations/004_cache_store.sql
-          PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -f supabase/migrations/005_organizations_and_rbac.sql
+          sudo cp scripts/supabase-shim.sh /usr/local/bin/supabase
+          sudo chmod +x /usr/local/bin/supabase
           node scripts/postgrest-proxy.js &
-          sleep 2
+          sleep 1
+      - name: Apply database migrations
+        run: supabase db reset
       - run: make test-crash
