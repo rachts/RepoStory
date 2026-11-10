@@ -116,7 +116,7 @@ export async function runAnalysis(
     id,
     repository: { id: "pending", owner: reference.owner, name: reference.name, url: reference.url, defaultBranch: reference.branch ?? "main", selectedBranch: reference.branch ?? "main", sizeBytes: 0, fileCount: 0 },
     status: "running",
-    stage: "fetching-metadata",
+    stage: "fetch-metadata",
     progressPercent: 10,
     filesDiscovered: 0,
     filesAnalyzed: 0,
@@ -134,11 +134,30 @@ export async function runAnalysis(
     options.onProgress?.({ stage, progress: progressPercent, message });
   };
   const fail = (error: AppError): Result<AnalysisResult, AppError> => {
-    logger.warn({ analysisId: id, stage: job.stage, code: error.code }, error.message);
+    let finalError = error;
+    if (error.code === "ANALYSIS_TIMEOUT") {
+      finalError = new AppError({
+        code: "ANALYSIS_TIMEOUT",
+        message: `Analysis timed out during stage '${job.stage}'.`,
+        retryable: false,
+        details: { stage: job.stage },
+      });
+    }
+    logger.warn({ analysisId: id, stage: job.stage, code: finalError.code }, finalError.message);
     repostoryJobsTotal.inc({ status: "failed" });
-    const failed: AnalysisResult = redactPathValues({ ...job, status: "failed", stage: "completed", error: { code: error.code as AnalysisError["code"], message: error.message, retryable: error.retryable, details: error.details } });
+    const failed: AnalysisResult = redactPathValues({
+      ...job,
+      status: "failed",
+      stage: "completed",
+      error: {
+        code: finalError.code as AnalysisError["code"],
+        message: finalError.message,
+        retryable: false,
+        details: finalError.details,
+      },
+    });
     store.save(failed);
-    return err(error);
+    return err(finalError);
   };
 
   const cacheStore = options.cacheStore ?? provider.cacheStore;
@@ -176,7 +195,7 @@ export async function runAnalysis(
         rawFiles.push(...options.files);
       }
     } else {
-      progress("fetching-metadata", 12, "Reading repository metadata");
+      progress("fetch-metadata", 12, "Reading repository metadata");
       const snapshot = await withSpan("fetch-metadata", async () => provider.getSnapshot(reference, signal, budget, (p) => {
         progress(p.stage as AnalysisResult["stage"], p.progress, p.message);
       }));
@@ -213,7 +232,7 @@ export async function runAnalysis(
       }
     }
 
-    progress("fetching-files", 28, "Fetching bounded repository content");
+    progress("fetch-archive", 45, "Fetching bounded repository content");
     const files = filterFiles(rawFiles, limits, budget);
     budget.check();
     const totalDiscovered = (snapshotCoverage?.filesConsidered !== undefined && snapshotCoverage?.filesSkipped !== undefined)
@@ -224,12 +243,12 @@ export async function runAnalysis(
     const bytesDiscovered = totalFileBytes(rawFiles);
     const bytesAnalyzed = totalFileBytes(files);
     const coverage: AnalysisCoverage = buildCoverage(rawFiles, files, limits, snapshotCoverage);
-    progress("filtering-files", 42, "Filtering for useful repository signal");
+    progress("filtering-files", 55, "Filtering for useful repository signal");
     const technologies = redactPathValues(analyzeTechnologies(files, budget), budget);
     budget.check();
     const phase3 = redactPathValues(analyzePhase3(files, budget, limits), budget);
     budget.check();
-    progress("analyzing", 58, "Finding architecture and entry points");
+    progress("analyze", 65, "Finding architecture and entry points");
     const safeFindings = await withSpan("analyze", async () => {
       const findings: typeof phase3.findings = [];
       for (const collection of [technologies, analyzeDirectories(files, budget), analyzeEntryPoints(files, budget), phase3.findings]) {
@@ -241,7 +260,7 @@ export async function runAnalysis(
       return redactPathValues(findings, budget);
     });
     budget.check();
-    progress("generating-diagrams", 78, "Generating evidence-backed story maps");
+    progress("generate-diagrams", 85, "Generating evidence-backed story maps");
     const diagrams = await withSpan("generate-diagrams", async () => {
       const resultDiagrams = [] as NonNullable<ReturnType<typeof repositoryStructureDiagram>>[];
       budget.check();
@@ -289,6 +308,9 @@ export async function runAnalysis(
     return ok(job);
   } catch (error) {
     if (error instanceof AppError) return fail(error);
+    if (signal?.aborted) {
+      return fail(new AppError({ code: "ANALYSIS_TIMEOUT", message: `Analysis timed out during stage '${job.stage}'.`, retryable: false, details: { stage: job.stage } }));
+    }
     logger.error({ analysisId: id, stage: job.stage, err: error }, "[RepoStory] unexpected analysis pipeline error");
     return fail(new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true }));
   } finally {

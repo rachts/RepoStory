@@ -34,8 +34,28 @@ function repositoryReference(job: AnalysisJobRecord): RepositoryReference {
 }
 
 function progressFor(result: { stage: string; progress: number; message: string }): { status: AnalysisJobRecord["status"]; stage: AnalysisJobRecord["stage"]; progress: number; message: string } {
-  const stage = result.stage === "fetching-metadata" ? "fetching-metadata" : result.stage === "fetching-files" ? "fetching-content" : result.stage === "filtering-files" ? "analyzing-repository" : result.stage === "analyzing" ? "analyzing-repository" : result.stage === "generating-diagrams" ? "analyzing-repository" : "storing-result";
-  const status: AnalysisJobRecord["status"] = stage === "fetching-metadata" || stage === "fetching-content" ? "fetching" : "analyzing";
+  let stage: AnalysisJobRecord["stage"] = "analyzing-repository";
+  let status: AnalysisJobRecord["status"] = "analyzing";
+
+  if (result.stage === "fetch-metadata" || result.stage === "fetching-metadata") {
+    stage = "fetch-metadata";
+    status = "fetching";
+  } else if (result.stage === "fetch-tree" || result.stage === "fetching-tree") {
+    stage = "fetch-tree";
+    status = "fetching";
+  } else if (result.stage === "fetch-archive" || result.stage === "fetching-content" || result.stage === "fetching-files") {
+    stage = "fetch-archive";
+    status = "fetching";
+  } else if (result.stage === "analyze" || result.stage === "analyzing" || result.stage === "filtering-files") {
+    stage = "analyze";
+    status = "analyzing";
+  } else if (result.stage === "generate-diagrams" || result.stage === "generating-diagrams") {
+    stage = "generate-diagrams";
+    status = "analyzing";
+  } else if (result.stage === "completed") {
+    stage = "completed";
+    status = "completed";
+  }
   return { status, stage, progress: result.progress, message: result.message };
 }
 

@@ -5,6 +5,10 @@ import { InMemoryAnalysisStore } from "@/application/store";
 import { runAnalysis } from "@/application/pipeline";
 import { toMermaid, toMarkdown } from "@/analysis/exports";
 import { GitHubPublicRepositoryProvider } from "@/infrastructure/providers/github-provider";
+import { AppError } from "@/domain/errors";
+import { DEFAULT_LIMITS } from "@/shared/limits";
+import type { RepositoryProvider } from "@/domain/repository";
+import { err } from "@/shared/result";
 
 describe("RepoStory Phase 1 core", () => {
   it("strictly parses public GitHub repository URLs", () => {
@@ -73,5 +77,45 @@ describe("RepoStory Phase 1 core", () => {
     expect(result.value.findings.every((finding) => finding.evidence.length > 0)).toBe(true);
     expect(result.value[collection]?.length).toBeGreaterThan(0);
     expect(result.value.diagramAvailability).toHaveLength(4);
+  });
+
+  it("simulates a slow stage and asserts a terminal ANALYSIS_TIMEOUT with the stage name", async () => {
+    const store = new InMemoryAnalysisStore();
+    const slowProvider: RepositoryProvider = {
+      async getSnapshot(_ref, signal) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        if (signal?.aborted) {
+          throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "Timeout" });
+        }
+        return err(new AppError({ code: "ANALYSIS_TIMEOUT", message: "Timeout" }));
+      },
+    };
+
+    const abortController = new AbortController();
+    setTimeout(() => abortController.abort(), 10);
+
+    const result = await runAnalysis(
+      { owner: "fixture", name: "slow-repo", url: "https://github.com/fixture/slow-repo" },
+      slowProvider,
+      store,
+      {
+        analysisId: "test-timeout-id",
+        signal: abortController.signal,
+        limits: { ...DEFAULT_LIMITS, maxAnalysisMs: 20 },
+      },
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error.code).toBe("ANALYSIS_TIMEOUT");
+      expect(result.error.retryable).toBe(false); // terminal failure!
+      expect(result.error.message).toContain("stage 'fetch-metadata'");
+    }
+
+    // Confirm job status in store is terminal failed, not stuck in running
+    const storedJob = store.get("test-timeout-id");
+    expect(storedJob?.status).toBe("failed");
+    expect(storedJob?.error?.code).toBe("ANALYSIS_TIMEOUT");
+    expect(storedJob?.error?.retryable).toBe(false);
   });
 });

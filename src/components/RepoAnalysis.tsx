@@ -318,7 +318,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
   if (!analysis) {
     return <main className="analysis-page">
       <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
-      {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : job?.status === "failed" ? <StateCard title="The analysis stopped early." message={job.error?.message ?? "The repository could not be analyzed."} action={job.error?.retryable ? <button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button> : undefined} /> : job?.status === "cancelled" ? <StateCard title="Analysis cancelled." message="No completed result was saved. You can start a new analysis from the home page." /> : job?.status === "expired" ? <StateCard title="This analysis expired." message="Analyze the repository again to create a fresh result." /> : <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />}
+      {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : job?.status === "failed" ? <StateCard title="The analysis stopped early." message={job.error?.message ?? "The repository could not be analyzed."} action={job.error?.retryable ? <button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button> : undefined} /> : job?.status === "cancelled" ? <StateCard title="Analysis cancelled." message="No completed result was saved. You can start a new analysis from the home page." /> : job?.status === "expired" ? <StateCard title="This analysis expired." message="Analyze the repository again to create a fresh result." /> : <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />}
     </main>;
   }
 
@@ -491,4 +491,39 @@ function VisibilityButton({ visible, onClick }: { visible: boolean; onClick: () 
 function EvidenceSection({ evidence }: { evidence: Array<{ id: string; filePath: string; lineStart?: number; reason: string; excerpt?: string }> }): React.JSX.Element { return <section className="evidence-section"><div><p className="eyebrow"><span className="eyebrow-line" /> Evidence</p><h3>Why this map exists</h3></div><div className="evidence-panel">{evidence.length ? evidence.map((item) => <article key={item.id}><strong>{item.filePath}{item.lineStart ? `:${item.lineStart}` : ""}</strong><p>{item.reason}</p>{item.excerpt ? <code>{item.excerpt}</code> : null}</article>) : <p className="muted">No source references were collected.</p>}</div></section>; }
 function AvailabilityList({ availability }: { availability?: AnalysisJob["diagramAvailability"] }): React.JSX.Element | null { const unavailable = availability?.filter((item) => !item.available) ?? []; return unavailable.length ? <div className="availability-list" aria-label="Diagram availability reasons">{unavailable.map((item) => <p key={item.type}><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><span>{item.reason ?? "Not enough evidence to generate this diagram."}</span></p>)}</div> : null; }
 function StateCard({ title, message, action, details }: { title: string; message: string; action?: React.ReactNode; details?: React.ReactNode }): React.JSX.Element { return <section className="state-card page-width" role="status" aria-live="polite"><span className="state-symbol" aria-hidden="true">!</span><h1>{title}</h1><p>{message}</p>{details}{action}</section>; }
-function ProgressState({ progress, stage, action }: { progress: number; stage: string; action?: React.ReactNode }): React.JSX.Element { const labels: Record<string, string> = { validating: "Checking the repository URL", "validating-input": "Checking the repository URL", "fetching-metadata": "Reading repository metadata", "fetching-tree": "Mapping repository files", "fetching-files": "Mapping repository files", "fetching-content": "Reading useful file content", "filtering-files": "Filtering for useful signal", "analyzing-repository": "Finding architecture and entry points", analyzing: "Finding architecture and entry points", "generating-diagrams": "Drawing the story maps", "generating-explanation": "Preparing the optional explanation", "storing-result": "Saving the evidence-backed result", completed: "Story ready" }; const safeProgress = Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0; return <section className="state-card page-width progress-state" role="status" aria-live="polite"><div className="progress-orb"><span>{Math.round(safeProgress)}%</span></div><p className="eyebrow"><span className="eyebrow-line" /> Building your story</p><h1>{labels[stage] ?? "Reading your repository"}<span className="animated-dots">…</span></h1><p>We’re tracing the important paths so the result stays useful, not noisy.</p><div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safeProgress)}><span style={{ width: `${Math.max(6, safeProgress)}%` }} /></div><small>{Math.round(safeProgress)}% complete · This usually takes under a minute</small>{action ? <div className="progress-actions">{action}</div> : null}</section>; }
+function ProgressState({ progress, stage, message, action }: { progress: number; stage: string; message?: string; action?: React.ReactNode }): React.JSX.Element {
+  const labels: Record<string, string> = {
+    validating: "Checking the repository URL",
+    "validating-input": "Checking the repository URL",
+    "fetching-metadata": "Reading repository metadata",
+    "fetch-metadata": "Reading repository metadata",
+    "fetching-tree": "Mapping repository files",
+    "fetch-tree": "Mapping repository files",
+    "fetching-files": "Mapping repository files",
+    "fetching-content": "Reading useful file content",
+    "fetch-archive": "Downloading repository archive in bulk",
+    "filtering-files": "Filtering for useful signal",
+    "analyzing-repository": "Finding architecture and entry points",
+    analyzing: "Finding architecture and entry points",
+    analyze: "Finding architecture and entry points",
+    "generating-diagrams": "Drawing the story maps",
+    "generate-diagrams": "Drawing the story maps",
+    "generating-explanation": "Preparing the optional explanation",
+    "storing-result": "Saving the evidence-backed result",
+    completed: "Story ready",
+  };
+  const safeProgress = Number.isFinite(progress) ? Math.min(100, Math.max(0, progress)) : 0;
+  return (
+    <section className="state-card page-width progress-state" role="status" aria-live="polite">
+      <div className="progress-orb"><span>{Math.round(safeProgress)}%</span></div>
+      <p className="eyebrow"><span className="eyebrow-line" /> Building your story</p>
+      <h1>{message || labels[stage] || "Reading your repository"}<span className="animated-dots">…</span></h1>
+      <p>We’re tracing the important paths so the result stays useful, not noisy.</p>
+      <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safeProgress)}>
+        <span style={{ width: `${Math.max(6, safeProgress)}%` }} />
+      </div>
+      <small>{Math.round(safeProgress)}% complete · {stage ? `Stage: ${stage}` : "This usually takes under a minute"}</small>
+      {action ? <div className="progress-actions">{action}</div> : null}
+    </section>
+  );
+}

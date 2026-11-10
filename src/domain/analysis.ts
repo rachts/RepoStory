@@ -14,10 +14,17 @@ export type AnalysisResultStatus =
 export type AnalysisResultStage =
   | "validating"
   | "fetching-metadata"
+  | "fetch-metadata"
+  | "fetching-tree"
+  | "fetch-tree"
   | "fetching-files"
+  | "fetching-content"
+  | "fetch-archive"
   | "filtering-files"
   | "analyzing"
+  | "analyze"
   | "generating-diagrams"
+  | "generate-diagrams"
   | "completed";
 
 export type AnalysisJobStatus =
@@ -33,9 +40,15 @@ export type AnalysisJobStatus =
 export type AnalysisJobStage =
   | "validating-input"
   | "fetching-metadata"
+  | "fetch-metadata"
   | "fetching-tree"
+  | "fetch-tree"
   | "fetching-content"
+  | "fetch-archive"
   | "analyzing-repository"
+  | "analyze"
+  | "generating-diagrams"
+  | "generate-diagrams"
   | "generating-explanation"
   | "storing-result"
   | "completed";
