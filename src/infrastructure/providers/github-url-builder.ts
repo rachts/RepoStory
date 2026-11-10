@@ -56,10 +56,10 @@ export function buildSafeGitHubApiUrl(
     });
   }
 
-  if (!url.pathname.startsWith("/repos/") && url.pathname !== "/zen") {
+  if (!url.pathname.startsWith("/repos/") && !url.pathname.startsWith("/repositories/") && url.pathname !== "/zen") {
     throw new AppError({
       code: "INVALID_URL",
-      message: "Target pathname must start with /repos/ or be /zen.",
+      message: "Target pathname must start with /repos/, /repositories/, or be /zen.",
       retryable: false,
     });
   }
