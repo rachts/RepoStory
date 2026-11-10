@@ -1,14 +1,3 @@
--- Migration 003: Row Level Security policies keyed on owner_id
-
--- Create auth schema and auth.uid() helper if not already provided by Supabase auth
-create schema if not exists auth;
-create or replace function auth.uid() returns text as $$
-  select coalesce(
-    nullif(current_setting('request.jwt.claim.sub', true), ''),
-    ((case when current_setting('request.jwt.claims', true) ~ '^\s*\{' then current_setting('request.jwt.claims', true)::jsonb else '{}'::jsonb end)->>'sub')
-  );
-$$ language sql stable;
-
 -- repo_story_jobs RLS policies
 create policy "Users can view their own jobs"
   on public.repo_story_jobs
