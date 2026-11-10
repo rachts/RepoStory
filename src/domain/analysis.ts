@@ -64,6 +64,8 @@ export interface AnalysisCoverage {
   analyzedPercent?: number;
   treeTruncated: boolean;
   analysisConfidence: AnalysisConfidence;
+  usedFallbackContentFetch?: boolean;
+  contentFetchStrategy?: "archive" | "per-file";
 }
 
 export interface AnalysisJobProgress {
