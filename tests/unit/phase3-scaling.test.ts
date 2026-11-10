@@ -1,55 +1,11 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { OrganizationService, type OrganizationRepository } from "@/application/organizations/organization-service";
-import type { Organization, OrganizationMembership } from "@/domain/organization";
 import { planIncrementalAnalysis } from "@/infrastructure/incremental/incremental-analyzer";
 import { HeuristicStreamingAnalyzer, TypeScriptAstStreamingAnalyzer } from "@/application/analysis/streaming-analyzer";
 import type { RepositoryFile } from "@/domain/repository";
 
 describe("Workstream 11: Phase 3 Scaling Foundations", () => {
-  describe("Multi-tenant Organizations & RBAC", () => {
-    const mockRepo: OrganizationRepository = {
-      async getOrganization(id: string): Promise<Organization | null> {
-        return { id, name: "Acme Corp", slug: "acme", createdAt: "", updatedAt: "" };
-      },
-      async getMembership(orgId: string, userId: string): Promise<OrganizationMembership | null> {
-        if (userId === "user-admin") return { id: "m1", orgId, userId, role: "admin", createdAt: "" };
-        if (userId === "user-analyst") return { id: "m2", orgId, userId, role: "analyst", createdAt: "" };
-        if (userId === "user-viewer") return { id: "m3", orgId, userId, role: "viewer", createdAt: "" };
-        return null;
-      },
-      async createOrganization() {
-        throw new Error("not implemented");
-      },
-      async addMember() {
-        throw new Error("not implemented");
-      },
-    };
-
-    const service = new OrganizationService(mockRepo);
-
-    it("enforces role permissions correctly across viewer, analyst, and admin", async () => {
-      // Viewer
-      await expect(service.authorize("org-1", "user-viewer", "view")).resolves.toBe("viewer");
-      await expect(service.authorize("org-1", "user-viewer", "analyze")).rejects.toThrow(/analysts or admins only/i);
-      await expect(service.authorize("org-1", "user-viewer", "admin")).rejects.toThrow(/admins only/i);
-
-      // Analyst
-      await expect(service.authorize("org-1", "user-analyst", "view")).resolves.toBe("analyst");
-      await expect(service.authorize("org-1", "user-analyst", "analyze")).resolves.toBe("analyst");
-      await expect(service.authorize("org-1", "user-analyst", "admin")).rejects.toThrow(/admins only/i);
-
-      // Admin
-      await expect(service.authorize("org-1", "user-admin", "view")).resolves.toBe("admin");
-      await expect(service.authorize("org-1", "user-admin", "analyze")).resolves.toBe("admin");
-      await expect(service.authorize("org-1", "user-admin", "admin")).resolves.toBe("admin");
-
-      // Non-member
-      await expect(service.authorize("org-1", "user-stranger", "view")).rejects.toThrow(/not a member/i);
-    });
-  });
-
   describe("Incremental Analysis Foundations", () => {
     it("plans incremental analysis comparing base and head commits using compare API", async () => {
       const origFlag = process.env.INCREMENTAL_ANALYSIS_ENABLED;

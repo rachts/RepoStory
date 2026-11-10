@@ -4,6 +4,8 @@ import GithubProvider from "next-auth/providers/github";
 export const authOptions: AuthOptions = {
   providers: [
     GithubProvider({
+      // In production, real GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are provided.
+      // Fallback mock credentials allow offline tests and local development without GitHub OAuth configured.
       clientId: process.env.GITHUB_CLIENT_ID ?? "mock-client-id",
       clientSecret: process.env.GITHUB_CLIENT_SECRET ?? "mock-client-secret",
     }),

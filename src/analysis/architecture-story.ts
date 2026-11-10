@@ -672,6 +672,3 @@ export function generateArchitectureStory(input: ArchitectureStoryInput, budget?
   budget?.check();
   return story;
 }
-
-export const createArchitectureStory = generateArchitectureStory;
-export const architectureStory = generateArchitectureStory;

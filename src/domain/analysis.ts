@@ -1,6 +1,6 @@
 import type { AnalysisFinding, ApiRouteFinding, AuthenticationFinding, DatabaseFinding, ExternalIntegrationFinding, ConfidenceLevel, ModuleRelationship } from "@/domain/finding";
 import type { DiagramType } from "@/domain/diagram";
-import type { Repository, RepositoryFile } from "@/domain/repository";
+import type { Repository } from "@/domain/repository";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { ProjectExplanation } from "@/domain/ai-explanation";
 
@@ -156,20 +156,11 @@ export interface AnalysisResult {
 /** Backward-compatible result name used by the existing UI and test fixtures. */
 export type AnalysisJob = AnalysisResult;
 
-/** Backward-compatible names for older pipeline consumers. */
-export type LegacyAnalysisStatus = AnalysisResultStatus;
-export type LegacyAnalysisStage = AnalysisResultStage;
-
 export interface DiagramAvailability {
   type: DiagramType;
   available: boolean;
   confidence?: ConfidenceLevel;
   reason?: string;
-}
-
-export interface AnalysisInput {
-  repository: Repository;
-  files: RepositoryFile[];
 }
 
 export interface AnalysisError {
@@ -198,14 +189,6 @@ export interface AnalysisError {
   message: string;
   details?: Record<string, string | number | boolean>;
   retryable: boolean;
-}
-
-export interface PlainEnglishExplanation {
-  technicalLabel: string;
-  plainEnglishLabel: string;
-  explanation: string;
-  technicalDetail?: string;
-  confidence: ConfidenceLevel;
 }
 
 export type {
