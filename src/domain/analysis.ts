@@ -1,6 +1,6 @@
 import type { AnalysisFinding, ApiRouteFinding, AuthenticationFinding, DatabaseFinding, ExternalIntegrationFinding, ConfidenceLevel, ModuleRelationship } from "@/domain/finding";
 import type { DiagramType } from "@/domain/diagram";
-import type { Repository, RepositoryFile } from "@/domain/repository";
+import type { Repository } from "@/domain/repository";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { ProjectExplanation } from "@/domain/ai-explanation";
 
