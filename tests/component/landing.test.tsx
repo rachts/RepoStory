@@ -78,4 +78,43 @@ describe("landing page", () => {
     expect(alert).toHaveTextContent("Cross-origin request forbidden");
     fetchSpy.mockRestore();
   });
+
+  it("displays HTTP status or statusText when response is non-JSON HTML", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("<html><body>500 Internal Server Error</body></html>", {
+        status: 500,
+        statusText: "Internal Server Error",
+        headers: { "Content-Type": "text/html" },
+      }),
+    );
+
+    render(<Home />);
+    fireEvent.change(screen.getByLabelText("Public GitHub repository URL"), {
+      target: { value: "https://github.com/facebook/react" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /tell the story/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Internal Server Error");
+    fetchSpy.mockRestore();
+  });
+
+  it("displays top-level message when returned by API", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: "Service temporarily unavailable" }), {
+        status: 503,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    render(<Home />);
+    fireEvent.change(screen.getByLabelText("Public GitHub repository URL"), {
+      target: { value: "https://github.com/facebook/react" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /tell the story/i }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("Service temporarily unavailable");
+    fetchSpy.mockRestore();
+  });
 });

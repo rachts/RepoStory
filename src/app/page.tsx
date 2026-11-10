@@ -42,6 +42,7 @@ export default function Home(): React.JSX.Element {
         const errorMessage =
           (typeof payload?.error === "object" ? payload?.error?.message : typeof payload?.error === "string" ? payload.error : undefined) ??
           (typeof payload?.message === "string" ? payload.message : undefined) ??
+          (response.statusText || (response.status ? `HTTP ${response.status}` : undefined)) ??
           "The repository could not be analyzed.";
         throw new Error(errorMessage);
       }

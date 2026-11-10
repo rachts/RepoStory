@@ -41,33 +41,39 @@ export function assertProductionGuards(
     });
   }
 
-  // 2. If memory queue or memory store is chosen, explicit bypass flags are required
-  if (customEnv.REPO_STORY_JOB_STORE === "memory" || customEnv.REPO_STORY_QUEUE_MODE === "memory") {
-    if (customEnv.ALLOW_IN_MEMORY_QUEUE !== "true") {
-      const errorMsg = "[RepoStory Config Error] InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true is explicitly set.";
-      console.error(errorMsg);
-      if (exitOnError) {
-        process.exit(1);
-      }
-      throw new AppError({
-        code: "CONFIG_ERROR",
-        message: errorMsg,
-        retryable: false,
-      });
-    }
+  // 2. If memory queue or memory store is chosen, or if file store is chosen without Supabase queue, explicit bypass flags are required
+  const isUsingMemoryQueue =
+    customEnv.REPO_STORY_QUEUE_MODE === "memory" ||
+    customEnv.REPO_STORY_JOB_STORE === "memory" ||
+    (customEnv.REPO_STORY_JOB_STORE === "file" && customEnv.REPO_STORY_QUEUE_MODE !== "supabase");
 
-    if (customEnv.REPO_STORY_JOB_STORE === "memory" && customEnv.ALLOW_IN_MEMORY_STORE !== "true") {
-      const errorMsg = "[RepoStory Config Error] InMemoryAnalysisStore is not allowed in production unless ALLOW_IN_MEMORY_STORE=true is explicitly set.";
-      console.error(errorMsg);
-      if (exitOnError) {
-        process.exit(1);
-      }
-      throw new AppError({
-        code: "CONFIG_ERROR",
-        message: errorMsg,
-        retryable: false,
-      });
+  if (isUsingMemoryQueue && customEnv.ALLOW_IN_MEMORY_QUEUE !== "true") {
+    const errorMsg =
+      customEnv.REPO_STORY_JOB_STORE === "file"
+        ? "[RepoStory Config Error] InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true is explicitly set (file mode requires an in-memory queue or Supabase queue)."
+        : "[RepoStory Config Error] InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true is explicitly set.";
+    console.error(errorMsg);
+    if (exitOnError) {
+      process.exit(1);
     }
+    throw new AppError({
+      code: "CONFIG_ERROR",
+      message: errorMsg,
+      retryable: false,
+    });
+  }
+
+  if (customEnv.REPO_STORY_JOB_STORE === "memory" && customEnv.ALLOW_IN_MEMORY_STORE !== "true") {
+    const errorMsg = "[RepoStory Config Error] InMemoryAnalysisStore is not allowed in production unless ALLOW_IN_MEMORY_STORE=true is explicitly set.";
+    console.error(errorMsg);
+    if (exitOnError) {
+      process.exit(1);
+    }
+    throw new AppError({
+      code: "CONFIG_ERROR",
+      message: errorMsg,
+      retryable: false,
+    });
   }
 
   // 3. If Supabase is chosen, credentials must be present

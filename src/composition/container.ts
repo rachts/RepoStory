@@ -53,6 +53,9 @@ function createLazyProxy<T extends object>(getExisting: () => T | undefined, fac
     set(target, prop, value, receiver) {
       return Reflect.set(target, prop, value, receiver);
     },
+    deleteProperty(target, prop) {
+      return Reflect.deleteProperty(target, prop);
+    },
     has(target, prop) {
       return prop in target || Reflect.has(resolveInstance(), prop);
     },
