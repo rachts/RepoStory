@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { analysisRepository, analysisStore } from "@/composition/container";
-import { ownerIdFromRequest } from "@/application/jobs/job-identity";
+import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { toMarkdown, toMermaid } from "@/analysis/exports";
 import { stableId } from "@/shared/ids";
 import { AppError } from "@/domain/errors";
@@ -20,11 +20,22 @@ const requestSchema = z.object({
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const identity = await resolveRequestIdentity(request, analysisRepository);
+    if (!identity.ok) {
+      return jsonResponse({ error: { code: identity.error.code, message: identity.error.message, retryable: false } }, { status: 401 });
+    }
+    const ownerId = identity.value.ownerId;
+
     const input = requestSchema.parse(await readJsonBody(request, MAX_REQUEST_BYTES));
-    const { ownerId } = ownerIdFromRequest(request);
     const repositoryDiagram = await analysisRepository.getAnalysisDiagram(input.diagramId, ownerId);
     const diagram = repositoryDiagram ?? analysisStore.getDiagram(input.diagramId);
     if (!diagram) return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+
+    const job = await analysisRepository.getJobByAnalysisId(diagram.analysisId);
+    if (job && job.ownerId !== ownerId) {
+      return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+    }
+
     const analysis = input.includeArchitectureSummary
       ? (await analysisRepository.getAnalysisResult(diagram.analysisId, ownerId)) ?? analysisStore.get(diagram.analysisId)
       : undefined;

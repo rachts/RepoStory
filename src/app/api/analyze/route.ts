@@ -1,11 +1,18 @@
 import { z } from "zod";
 import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
-import { analysisJobRunner, analysisRepository } from "@/composition/container";
-import { ownerIdFromRequest, analysisCacheKey, sessionCookieHeader } from "@/application/jobs/job-identity";
+import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
+import {
+  resolveRequestIdentity,
+  checkDailyQuota,
+  analysisCacheKey,
+  sessionCookieHeader,
+} from "@/application/jobs/job-identity";
+import { getInboundRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
 import { opaqueId, nowIso } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
+import { getProductionConfigError } from "@/config/production-guards";
 
 const MAX_REQUEST_BYTES = 8 * 1024;
 
@@ -17,6 +24,68 @@ const requestSchema = z.object({
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const configError = getProductionConfigError();
+    if (configError) {
+      return jsonResponse(
+        {
+          error: {
+            code: "CONFIG_ERROR",
+            message: configError.message,
+            retryable: false,
+          },
+        },
+        { status: 500 },
+      );
+    }
+
+    const identityResult = await resolveRequestIdentity(request, analysisRepository);
+    if (!identityResult.ok) {
+      return jsonResponse({ error: { code: identityResult.error.code, message: identityResult.error.message, retryable: false } }, { status: 401 });
+    }
+    const { ownerId, setCookie, isAuthenticated } = identityResult.value;
+
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || request.headers.get("x-real-ip") || "127.0.0.1";
+    const rateLimitIdentifier = isAuthenticated ? `user:${ownerId}` : `ip:${ip}`;
+    const rateLimit = await getInboundRateLimiter().limit(rateLimitIdentifier);
+    if (!rateLimit.success) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((rateLimit.resetAt - Date.now()) / 1000));
+      return jsonResponse(
+        {
+          error: {
+            code: "RATE_LIMITED",
+            message: "Inbound rate limit exceeded. Max 10 requests per minute.",
+            retryable: true,
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(retryAfterSeconds),
+          },
+        },
+      );
+    }
+
+    const quota = await checkDailyQuota(ownerId, analysisRepository);
+    if (!quota.allowed) {
+      return jsonResponse(
+        {
+          error: {
+            code: "QUOTA_EXCEEDED",
+            message: `Daily analysis quota exceeded (${quota.limit} per day). Please retry after the quota resets.`,
+            retryable: true,
+            details: { quota: quota.limit, resetAt: quota.resetAt },
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "Retry-After": String(quota.retryAfterSeconds),
+          },
+        },
+      );
+    }
+
     const body = await readJsonBody(request, MAX_REQUEST_BYTES);
     const input = requestSchema.parse(body);
     const parsed = parseGitHubUrl(input.repositoryUrl);
@@ -26,7 +95,6 @@ export async function POST(request: Request): Promise<NextResponse> {
       if (!branch.ok) return errorResponse(branch.error);
     }
     const reference = { ...parsed.value, ...(input.branch ? { branch: input.branch } : {}) };
-    const { ownerId, setCookie } = ownerIdFromRequest(request);
     const cacheKey = analysisCacheKey(reference);
     await analysisRepository.markExpiredJobs();
     const created = await analysisRepository.createOrReuseJob({
@@ -48,7 +116,10 @@ export async function POST(request: Request): Promise<NextResponse> {
       explanationRequested: input.explanationRequested,
     });
     const job = created.job;
-    if (created.created) analysisJobRunner.enqueue(job.jobId);
+    if (created.created) {
+      await jobQueue.enqueue(job.jobId);
+      analysisJobRunner.enqueue(job.jobId);
+    }
     const response = jsonResponse({
       jobId: job.jobId,
       analysisId: job.analysisId,

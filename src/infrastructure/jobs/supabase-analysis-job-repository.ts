@@ -81,6 +81,13 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   private readonly fetchImpl: typeof fetch;
 
   public constructor(options: SupabaseOptions) {
+    if (process.env.NODE_ENV === "production" && (!options.url || !options.secretKey)) {
+      throw new AppError({
+        code: "INVALID_CONFIGURATION",
+        message: "[RepoStory Config Error] SUPABASE_URL and SUPABASE_SECRET_KEY are required for SupabaseAnalysisJobRepository in production.",
+        retryable: false,
+      });
+    }
     this.baseUrl = `${options.url?.replace(/\/$/, "") ?? ""}/rest/v1`;
     this.secretKey = options.secretKey ?? "";
     this.maxAnalyses = options.maxAnalyses ?? 100;
@@ -272,5 +279,34 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
     const original = existing.original_diagram as Diagram;
     await this.request("resetting diagram", "repo_story_diagrams", { method: "PATCH", headers: { Prefer: "return=minimal" }, body: JSON.stringify({ diagram: original, updated_at: nowIso() }) }, new URLSearchParams({ diagram_id: `eq.${diagramId}` }).toString());
     return structuredClone(original);
+  }
+
+  public async countAnalysesSince(ownerId: string, since: Date): Promise<number> {
+    const params = new URLSearchParams({
+      select: "job_id",
+      owner_id: `eq.${ownerId}`,
+      created_at: `gte.${since.toISOString()}`,
+    });
+    const rows = asRows<JsonRecord>(await this.request<unknown>("counting analyses", "repo_story_jobs", { method: "GET" }, params.toString()));
+    return rows.length;
+  }
+
+  public async migrateAnonymousOwnership(fromOwnerId: string, toOwnerId: string): Promise<number> {
+    const params = new URLSearchParams({ owner_id: `eq.${fromOwnerId}` });
+    const updatePayload = JSON.stringify({ owner_id: toOwnerId, updated_at: nowIso() });
+
+    const updatedJobs = asRows<JsonRecord>(await this.request<unknown>("migrating jobs", "repo_story_jobs", {
+      method: "PATCH",
+      headers: { Prefer: "return=representation" },
+      body: updatePayload,
+    }, params.toString()));
+
+    await Promise.allSettled([
+      this.request("migrating results", "repo_story_results", { method: "PATCH", body: updatePayload }, params.toString()),
+      this.request("migrating diagrams", "repo_story_diagrams", { method: "PATCH", body: updatePayload }, params.toString()),
+      this.request("migrating explanations", "repo_story_explanations", { method: "PATCH", body: updatePayload }, params.toString()),
+    ]);
+
+    return updatedJobs.length;
   }
 }

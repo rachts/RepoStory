@@ -1,0 +1,122 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "rachts/**"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+
+  test-unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: npm run test:unit
+
+  test-integration:
+    name: Integration Tests (MSW)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: make test-integration
+
+  build:
+    name: Next.js Production Build
+    runs-on: ubuntu-latest
+    needs: [lint-and-typecheck, test-unit, test-integration]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+  test-e2e:
+    name: End-to-End Tests (Playwright)
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: make test-e2e
+
+  test-crash:
+    name: Worker Crash Recovery
+    runs-on: ubuntu-latest
+    needs: [test-integration]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: repostory_test
+          POSTGRES_USER: macbookair
+          POSTGRES_PASSWORD: password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      postgrest:
+        image: postgrest/postgrest:latest
+        env:
+          PGRST_DB_URI: postgres://macbookair:password@postgres:5432/repostory_test
+          PGRST_DB_SCHEMAS: public
+          PGRST_DB_ANON_ROLE: macbookair
+          PGRST_SERVER_PORT: 3001
+          PGRST_JWT_SECRET: really-secret-jwt-key-with-at-least-32-chars-long
+        ports:
+          - 3001:3001
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.14.0
+          cache: npm
+      - run: npm ci
+      - name: Start PostgREST proxy
+        run: |
+          sudo apt-get install -y postgresql-client
+          sudo cp scripts/supabase-shim.sh /usr/local/bin/supabase
+          sudo chmod +x /usr/local/bin/supabase
+          node scripts/postgrest-proxy.js &
+          sleep 1
+      - name: Apply database migrations
+        run: supabase db reset
+      - run: make test-crash

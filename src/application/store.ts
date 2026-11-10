@@ -2,6 +2,7 @@ import type { AnalysisJobPatch, AnalysisJobRepository, PersistedAnalysisReposito
 import type { AnalysisJobRecord as DurableAnalysisJob, AnalysisResult } from "@/domain/analysis";
 import type { ProjectExplanation } from "@/domain/ai-explanation";
 import type { Diagram } from "@/domain/diagram";
+import { AppError } from "@/domain/errors";
 import { DEFAULT_STORE_LIMITS } from "@/shared/limits";
 import { redactPathValues } from "@/shared/redaction";
 import { nowIso } from "@/shared/ids";
@@ -10,6 +11,7 @@ export interface InMemoryAnalysisStoreOptions {
   maxAnalyses?: number;
   ttlMs?: number;
   now?: () => number;
+  isScratch?: boolean;
 }
 
 export interface AnalysisStore {
@@ -40,6 +42,13 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   private readonly now: () => number;
 
   public constructor(options: InMemoryAnalysisStoreOptions = {}) {
+    if (process.env.NODE_ENV === "production" && process.env.ALLOW_IN_MEMORY_STORE !== "true" && !options.isScratch) {
+      throw new AppError({
+        code: "INVALID_CONFIGURATION",
+        message: "InMemoryAnalysisStore is not allowed in production. Set ALLOW_IN_MEMORY_STORE=true to override or configure Supabase storage.",
+        retryable: false,
+      });
+    }
     this.maxAnalyses = options.maxAnalyses ?? DEFAULT_STORE_LIMITS.maxAnalyses;
     this.ttlMs = options.ttlMs ?? DEFAULT_STORE_LIMITS.ttlMs;
     this.now = options.now ?? Date.now;
@@ -301,5 +310,27 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     const reset = structuredClone(original);
     this.diagrams.set(id, reset);
     return structuredClone(reset);
+  }
+
+  public async countAnalysesSince(ownerId: string, since: Date): Promise<number> {
+    const sinceTime = since.getTime();
+    let count = 0;
+    for (const job of this.durableJobs.values()) {
+      if (job.ownerId === ownerId && new Date(job.createdAt).getTime() >= sinceTime) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  public async migrateAnonymousOwnership(fromOwnerId: string, toOwnerId: string): Promise<number> {
+    let count = 0;
+    for (const [, job] of this.durableJobs) {
+      if (job.ownerId === fromOwnerId) {
+        job.ownerId = toOwnerId;
+        count += 1;
+      }
+    }
+    return count;
   }
 }
