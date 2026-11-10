@@ -11,6 +11,7 @@ import { buildSafeGitHubApiUrl } from "@/infrastructure/providers/github-url-bui
 import type { CacheStore } from "@/application/cache/cache-store";
 import { InMemoryCacheStore } from "@/infrastructure/cache/in-memory-cache-store";
 import { decodeFileBuffer, detectCaseCollisions, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
+import { extractRepositoryArchive } from "@/infrastructure/streaming/archive-extractor";
 import type { AnalysisCoverage } from "@/domain/analysis";
 import { repostoryGitHubRequestsTotal, repostoryGitHubRateLimitErrorsTotal } from "@/shared/metrics";
 import { Octokit } from "@octokit/rest";
@@ -361,13 +362,19 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       budget?.check();
       this.circuitBreaker.check();
 
-      // Ensure the URL is valid and targets api.github.com
-      if (
-        currentUrl.hostname.toLowerCase() !== "api.github.com" ||
-        (!currentUrl.pathname.startsWith("/repos/") &&
-          !currentUrl.pathname.startsWith("/repositories/") &&
-          currentUrl.pathname !== "/zen")
-      ) {
+      // Ensure the URL is valid and targets api.github.com, or codeload.github.com for archive
+      const isApiGithub = currentUrl.hostname.toLowerCase() === "api.github.com";
+      const isCodeload = currentUrl.hostname.toLowerCase() === "codeload.github.com";
+
+      const isHostPermitted =
+        currentUrl.protocol === "https:" &&
+        ((isApiGithub &&
+          (currentUrl.pathname.startsWith("/repos/") ||
+            currentUrl.pathname.startsWith("/repositories/") ||
+            currentUrl.pathname === "/zen")) ||
+          (stage === "archive" && isCodeload));
+
+      if (!isHostPermitted) {
         throw new AppError({
           code: "REPOSITORY_INACCESSIBLE",
           message: "GitHub URL must target api.github.com/repos/.",
@@ -377,48 +384,75 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
 
       const token = this.tokenPool.getBestToken();
       const headers: Record<string, string> = {
-        accept: "application/vnd.github+json",
+        accept: stage === "archive" ? "application/x-gzip, application/octet-stream, */*" : "application/vnd.github+json",
       };
       if (fetchOptions.headers) {
         new Headers(fetchOptions.headers).forEach((val, key) => {
           headers[key] = val;
         });
       }
-      if (token) {
+      if (token && !isCodeload) {
         headers["authorization"] = `Bearer ${token}`;
       }
 
-      let octokitStatus: number;
-      let octokitHeaders: Record<string, string>;
-      let octokitBody: string;
+      let response: Response;
 
-      try {
-        const octokitResult = await this.octokit.request(`GET ${currentUrl.toString()}`, {
-          headers,
-          request: {
-            signal: fetchOptions.signal ?? undefined,
+      if (stage === "archive") {
+        const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          const mergedInit: RequestInit = {
+            ...init,
             redirect: "manual",
-          },
-        });
-        octokitStatus = octokitResult.status;
-        octokitHeaders = octokitResult.headers as Record<string, string>;
-        octokitBody = typeof octokitResult.data === "string" ? octokitResult.data : JSON.stringify(octokitResult.data);
-      } catch (error: unknown) {
-        if (error && typeof error === "object" && "status" in error && "response" in error) {
-          const resp = (error as { status: unknown; response?: { headers?: unknown; data?: unknown } }).response;
-          octokitStatus = Number((error as { status: unknown }).status);
-          octokitHeaders = (resp?.headers ?? {}) as Record<string, string>;
-          octokitBody = typeof resp?.data === "string" ? resp.data : JSON.stringify(resp?.data ?? {});
-        } else {
-          throw error;
-        }
-      }
+            cache: "no-store",
+          };
+          return this.fetchImpl(input, mergedInit);
+        };
 
-      const responseHeaders = new Headers(octokitHeaders);
-      const response = new Response(octokitBody, {
-        status: octokitStatus,
-        headers: responseHeaders,
-      });
+        try {
+          response = await safeFetch(currentUrl.toString(), {
+            ...fetchOptions,
+            headers,
+            redirect: "manual",
+          });
+        } catch (error: unknown) {
+          throw new AppError({
+            code: "REPOSITORY_INACCESSIBLE",
+            message: `GitHub ${stage} request failed: ${error instanceof Error ? error.message : "network failure"}.`,
+            retryable: true,
+          });
+        }
+      } else {
+        let octokitStatus: number;
+        let octokitHeaders: Record<string, string>;
+        let octokitBody: string;
+
+        try {
+          const octokitResult = await this.octokit.request(`GET ${currentUrl.toString()}`, {
+            headers,
+            request: {
+              signal: fetchOptions.signal ?? undefined,
+              redirect: "manual",
+            },
+          });
+          octokitStatus = octokitResult.status;
+          octokitHeaders = octokitResult.headers as Record<string, string>;
+          octokitBody = typeof octokitResult.data === "string" ? octokitResult.data : JSON.stringify(octokitResult.data);
+        } catch (error: unknown) {
+          if (error && typeof error === "object" && "status" in error && "response" in error) {
+            const resp = (error as { status: unknown; response?: { headers?: unknown; data?: unknown } }).response;
+            octokitStatus = Number((error as { status: unknown }).status);
+            octokitHeaders = (resp?.headers ?? {}) as Record<string, string>;
+            octokitBody = typeof resp?.data === "string" ? resp.data : JSON.stringify(resp?.data ?? {});
+          } else {
+            throw error;
+          }
+        }
+
+        const responseHeaders = new Headers(octokitHeaders);
+        response = new Response(octokitBody, {
+          status: octokitStatus,
+          headers: responseHeaders,
+        });
+      }
 
       repostoryGitHubRequestsTotal.inc({ endpoint: stage, status: String(response.status) });
 
@@ -446,7 +480,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         response.headers.get("x-ratelimit-reset"),
       );
 
-      // Handle 3xx redirects securely (allow api.github.com redirects, reject cross-host escapes)
+      // Handle 3xx redirects securely (allow api.github.com redirects, reject cross-host escapes, allow codeload ONLY for archive)
       if (response.status >= 300 && response.status < 400) {
         const location = response.headers.get("location");
         if (!location) {
@@ -468,7 +502,12 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           });
         }
 
-        if (locUrl.hostname.toLowerCase() !== "api.github.com") {
+        const isRedirectAllowed =
+          locUrl.protocol === "https:" &&
+          (locUrl.hostname.toLowerCase() === "api.github.com" ||
+            (stage === "archive" && locUrl.hostname.toLowerCase() === "codeload.github.com"));
+
+        if (!isRedirectAllowed) {
           throw new AppError({
             code: "REPOSITORY_INACCESSIBLE",
             message: "GitHub redirected to an unauthorized external host.",
@@ -528,7 +567,12 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     }
   }
 
-  public async getSnapshot(reference: RepositoryReference, signal?: AbortSignal, budget?: AnalysisBudget): Promise<Result<RepositorySnapshot, AppError>> {
+  public async getSnapshot(
+    reference: RepositoryReference,
+    signal?: AbortSignal,
+    budget?: AnalysisBudget,
+    onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
+  ): Promise<Result<RepositorySnapshot, AppError>> {
     const fetchOptions: RequestInit = { signal, cache: "no-store" };
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
@@ -547,6 +591,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
 
     try {
       budget?.check();
+      onProgress?.({ stage: "fetch-metadata", progress: 10, message: "Reading repository metadata" });
       const metaUrl = buildSafeGitHubApiUrl(reference.owner, reference.name);
       const metaResponse = await this.dispatch(metaUrl, fetchOptions, "metadata", budget);
       if (!metaResponse.ok) {
@@ -570,6 +615,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
 
       if (!treeEntries) {
         budget?.check();
+        onProgress?.({ stage: "fetch-tree", progress: 25, message: "Reading repository file tree" });
         const treeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`, { recursive: "1" });
         const treeResponse = await this.dispatch(treeUrl, fetchOptions, "tree", budget);
         if (!treeResponse.ok) return err(responseFailure(treeResponse, "tree"));
@@ -716,84 +762,154 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         .sort((a, b) => candidatePriority(a.path) - candidatePriority(b.path) || a.path.localeCompare(b.path));
       budget?.check();
 
-      const files: RepositoryFile[] = [];
-      let fetchedBytes = 0;
-      let nextIndex = 0;
+      let files: RepositoryFile[] = [];
+      let usedFallbackContentFetch = false;
+      let contentFetchStrategy: "archive" | "per-file" = "archive";
+      const forcePerFile = process.env.REPO_STORY_FORCE_PER_FILE_FETCH === "true";
+      const candidatePathsSet = new Set(candidates.map((c) => c.path));
+      let archiveSucceeded = false;
 
-      const worker = async (): Promise<JsonResult<null>> => {
-        while (true) {
+      if (!forcePerFile && candidates.length > 0) {
+        onProgress?.({ stage: "fetch-archive", progress: 45, message: "Downloading and decompressing archive content" });
+        try {
           budget?.check();
-          const index = nextIndex++;
-          const item = candidates[index];
-          if (!item) return ok(null);
-          const itemSize = item.sizeBytes ?? 0;
-          if (itemSize > this.limits.maxContentBytes) {
-            coverageDetails.push({ path: item.path, reason: "too-large" });
-            skippedByReason.tooLarge += 1;
-            continue;
-          }
+          const archiveUrl = buildSafeGitHubApiUrl(
+            reference.owner,
+            reference.name,
+            `tarball/${encodeURIComponent(commitSha)}`,
+          );
+          const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget);
 
-          const mem = process.memoryUsage().heapUsed;
-          const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
-          if (mem > maxHeapBytes) {
-            coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Memory budget reached" });
-            skippedByReason.limitReached += 1;
-            continue;
-          }
+          if (archiveResponse.ok && archiveResponse.body) {
+            const extracted = await extractRepositoryArchive({
+              stream: archiveResponse.body,
+              candidatePaths: candidatePathsSet,
+              limits: this.limits,
+              budget,
+              cacheStore: this.cacheStore,
+              cacheKeyPrefix: `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:`,
+              signal,
+            });
 
-          const fileCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:${item.path}`;
-          const cachedContent = await this.cacheStore.get<string>(fileCacheKey);
+            if (extracted.files.length > 0 || candidates.length === 0) {
+              files = extracted.files;
+              coverageDetails.push(...extracted.coverageDetails);
+              skippedByReason.tooLarge += extracted.skippedByReason.tooLarge;
+              skippedByReason.unsupported += extracted.skippedByReason.unsupported;
+              skippedByReason.limitReached += extracted.skippedByReason.limitReached;
+              skippedByReason.lfsPointer += extracted.skippedByReason.lfsPointer;
+              skippedByReason.submodule += extracted.skippedByReason.submodule;
+              skippedByReason.unsupportedEncoding += extracted.skippedByReason.unsupportedEncoding;
+              skippedByReason.pathCollision += extracted.skippedByReason.pathCollision;
 
-          let content: string;
-          if (cachedContent !== undefined) {
-            content = cachedContent;
-          } else {
-            budget?.check();
-            const contentUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `contents/${encodeGitHubPath(item.path)}`, { ref: commitSha });
-            const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget);
-            if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
-
-            const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
-            if (!contentResult.ok) return contentResult;
-            const payload = contentResult.value;
-            if (!isRecord(payload) || typeof payload.content !== "string" || payload.encoding !== "base64") return err(invalidContent());
-
-            const decodedResult = decodeGitHubContent(payload.content, this.limits.maxContentBytes);
-            if (!decodedResult.ok) {
-              if (decodedResult.error.code === "GITHUB_CONTENT_TOO_LARGE") {
-                coverageDetails.push({ path: item.path, reason: "too-large" });
-                skippedByReason.tooLarge += 1;
-                continue;
+              const handledPaths = new Set(files.map((f) => f.path));
+              for (const detail of extracted.coverageDetails) {
+                handledPaths.add(detail.path);
               }
-              return decodedResult;
+              for (const cand of candidates) {
+                if (!handledPaths.has(cand.path)) {
+                  coverageDetails.push({ path: cand.path, reason: "unsupported" });
+                  skippedByReason.unsupported += 1;
+                }
+              }
+
+              archiveSucceeded = true;
+              contentFetchStrategy = "archive";
+            } else {
+              warnings.push("Archive extraction yielded 0 files. Falling back to per-file fetch.");
             }
-            if ("skipped" in decodedResult.value) {
-              const reason = decodedResult.value.reason;
-              coverageDetails.push({ path: item.path, reason });
-              if (reason === "lfs-pointer") skippedByReason.lfsPointer += 1;
-              else if (reason === "unsupported-encoding") skippedByReason.unsupportedEncoding += 1;
-              else if (reason === "too-large") skippedByReason.tooLarge += 1;
+          } else {
+            warnings.push(`Archive endpoint returned status ${archiveResponse.status}. Falling back to per-file fetch.`);
+          }
+        } catch (archiveError) {
+          if (archiveError instanceof AppError && archiveError.code === "ANALYSIS_TIMEOUT") {
+            throw archiveError;
+          }
+          warnings.push(`Archive fetch failed: ${archiveError instanceof Error ? archiveError.message : "unknown error"}. Falling back to per-file fetch.`);
+        }
+      }
+
+      if (!archiveSucceeded && candidates.length > 0) {
+        usedFallbackContentFetch = true;
+        contentFetchStrategy = "per-file";
+        let fetchedBytes = 0;
+        let nextIndex = 0;
+
+        const worker = async (): Promise<JsonResult<null>> => {
+          while (true) {
+            budget?.check();
+            const index = nextIndex++;
+            const item = candidates[index];
+            if (!item) return ok(null);
+            const itemSize = item.sizeBytes ?? 0;
+            if (itemSize > this.limits.maxContentBytes) {
+              coverageDetails.push({ path: item.path, reason: "too-large" });
+              skippedByReason.tooLarge += 1;
               continue;
             }
-            content = decodedResult.value.content;
-            await this.cacheStore.set(fileCacheKey, content, 3_600_000);
-          }
 
-          const actualBytes = Buffer.byteLength(content, "utf8");
-          if (fetchedBytes + actualBytes > this.limits.maxTotalBytes) {
-            coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Total bytes limit reached" });
-            skippedByReason.limitReached += 1;
-            continue;
-          }
-          fetchedBytes += actualBytes;
-          files.push({ path: item.path, type: "file", sizeBytes: itemSize || actualBytes, content, isAnalyzable: true });
-        }
-      };
+            const mem = process.memoryUsage().heapUsed;
+            const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
+            if (mem > maxHeapBytes) {
+              coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Memory budget reached" });
+              skippedByReason.limitReached += 1;
+              continue;
+            }
 
-      const workers = Array.from({ length: Math.min(maxConcurrentRequests(this.limits), candidates.length) }, () => worker());
-      const results = await Promise.all(workers);
-      const failed = results.find((result) => !result.ok);
-      if (failed && !failed.ok) return failed;
+            const fileCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:${item.path}`;
+            const cachedContent = await this.cacheStore.get<string>(fileCacheKey);
+
+            let content: string;
+            if (cachedContent !== undefined) {
+              content = cachedContent;
+            } else {
+              budget?.check();
+              const contentUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `contents/${encodeGitHubPath(item.path)}`, { ref: commitSha });
+              const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget);
+              if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
+
+              const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
+              if (!contentResult.ok) return contentResult;
+              const payload = contentResult.value;
+              if (!isRecord(payload) || typeof payload.content !== "string" || payload.encoding !== "base64") return err(invalidContent());
+
+              const decodedResult = decodeGitHubContent(payload.content, this.limits.maxContentBytes);
+              if (!decodedResult.ok) {
+                if (decodedResult.error.code === "GITHUB_CONTENT_TOO_LARGE") {
+                  coverageDetails.push({ path: item.path, reason: "too-large" });
+                  skippedByReason.tooLarge += 1;
+                  continue;
+                }
+                return decodedResult;
+              }
+              if ("skipped" in decodedResult.value) {
+                const reason = decodedResult.value.reason;
+                coverageDetails.push({ path: item.path, reason });
+                if (reason === "lfs-pointer") skippedByReason.lfsPointer += 1;
+                else if (reason === "unsupported-encoding") skippedByReason.unsupportedEncoding += 1;
+                else if (reason === "too-large") skippedByReason.tooLarge += 1;
+                continue;
+              }
+              content = decodedResult.value.content;
+              await this.cacheStore.set(fileCacheKey, content, 3_600_000);
+            }
+
+            const actualBytes = Buffer.byteLength(content, "utf8");
+            if (fetchedBytes + actualBytes > this.limits.maxTotalBytes) {
+              coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Total bytes limit reached" });
+              skippedByReason.limitReached += 1;
+              continue;
+            }
+            fetchedBytes += actualBytes;
+            files.push({ path: item.path, type: "file", sizeBytes: itemSize || actualBytes, content, isAnalyzable: true });
+          }
+        };
+
+        const workers = Array.from({ length: Math.min(maxConcurrentRequests(this.limits), candidates.length) }, () => worker());
+        const results = await Promise.all(workers);
+        const failed = results.find((result) => !result.ok);
+        if (failed && !failed.ok) return failed;
+      }
       files.sort((a, b) => a.path.localeCompare(b.path));
 
       const totalDiscovered = treeEntries.length + coverageDetails.length;
@@ -826,6 +942,8 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         analyzedPercent,
         treeTruncated: isTruncated,
         analysisConfidence: files.length === totalDiscovered ? "high" : files.length >= totalDiscovered * 0.5 ? "medium" : "low",
+        usedFallbackContentFetch,
+        contentFetchStrategy,
       };
 
       const id = typeof metadata.id === "number" || typeof metadata.id === "string" ? String(metadata.id) : `${reference.owner}/${reference.name}`;
