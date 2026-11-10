@@ -131,9 +131,3 @@ export function analyzeExternalIntegrations(files: RepositoryFile[], budget?: An
   budget?.check();
   return findings;
 }
-
-export const analyzeIntegrations = analyzeExternalIntegrations;
-export const detectExternalIntegrations = analyzeExternalIntegrations;
-export const findExternalIntegrations = analyzeExternalIntegrations;
-export const analyzeExternalServices = analyzeExternalIntegrations;
-export const detectIntegrations = analyzeExternalIntegrations;

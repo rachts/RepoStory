@@ -351,10 +351,3 @@ export function authenticationFlowDiagram(analysisId: string, repository: Reposi
     updatedAt: createdAt,
   };
 }
-
-export const generateApiRequestFlowDiagram = apiRequestFlowDiagram;
-export const generateAuthenticationFlowDiagram = authenticationFlowDiagram;
-export const generateApiRequestFlow = apiRequestFlowDiagram;
-export const generateAuthenticationFlow = authenticationFlowDiagram;
-export const createApiRequestFlowDiagram = apiRequestFlowDiagram;
-export const createAuthenticationFlowDiagram = authenticationFlowDiagram;

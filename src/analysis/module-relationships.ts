@@ -109,8 +109,3 @@ export function analyzeModuleRelationships(files: RepositoryFile[], budget?: Ana
   budget?.check();
   return sortedRelationships;
 }
-
-export const analyzeModules = analyzeModuleRelationships;
-export const detectModuleRelationships = analyzeModuleRelationships;
-export const findModuleRelationships = analyzeModuleRelationships;
-export const analyzeRelationships = analyzeModuleRelationships;

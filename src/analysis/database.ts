@@ -152,10 +152,3 @@ export function analyzeDatabaseEvidence(files: RepositoryFile[], budget?: Analys
   budget?.check();
   return findings;
 }
-
-export const analyzeDatabases = analyzeDatabaseEvidence;
-export const detectDatabaseEvidence = analyzeDatabaseEvidence;
-export const findDatabaseEvidence = analyzeDatabaseEvidence;
-export const analyzeDatabase = analyzeDatabaseEvidence;
-export const detectDatabase = analyzeDatabaseEvidence;
-export const detectDatabaseUsage = analyzeDatabaseEvidence;
