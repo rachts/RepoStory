@@ -78,6 +78,10 @@ describe("Workstream 3: GitHub Resilience (MSW offline tests)", () => {
       return HttpResponse.json(mockTree);
     }),
 
+    http.get("https://api.github.com/repos/:owner/:repo/tarball/:path*", () => {
+      return new HttpResponse(null, { status: 404 });
+    }),
+
     http.get("https://api.github.com/repos/:owner/:repo/contents/:path*", ({ request }) => {
       const auth = request.headers.get("authorization");
       if (auth) tokensUsed.push(auth);
