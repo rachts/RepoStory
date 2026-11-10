@@ -4,6 +4,7 @@ import type { RepositoryReference } from "@/domain/repository";
 import { AppError } from "@/domain/errors";
 import { err, ok, type Result } from "@/shared/result";
 import type { AnalysisJobRepository } from "@/application/jobs/analysis-job-repository";
+import { logger } from "@/shared/logger";
 
 export const SESSION_COOKIE = "repo_story_session";
 export const DEFAULT_DAILY_QUOTA = 5;
@@ -67,10 +68,10 @@ export async function resolveRequestIdentity(
       try {
         const count = await analysisRepo.migrateAnonymousOwnership(validAnonCookie, sessionUser);
         if (count > 0) {
-          console.log(`[Auth Migration] Migrated ${count} jobs from anonymous session ${validAnonCookie} to user ${sessionUser}`);
+          logger.info({ event: "auth_migration", count, anonymousSession: validAnonCookie, user: sessionUser }, `[Auth Migration] Migrated ${count} jobs from anonymous session to user`);
         }
       } catch (err) {
-        console.error("[Auth Migration] Error migrating anonymous jobs:", err);
+        logger.error({ err, anonymousSession: validAnonCookie, user: sessionUser }, "[Auth Migration] Error migrating anonymous jobs");
       }
     }
 
