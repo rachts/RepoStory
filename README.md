@@ -282,12 +282,11 @@ When `NODE_ENV=production`, the application executes fail-fast configuration che
 When using PostgreSQL or Supabase, apply migrations in sequential order using `psql`:
 
 ```bash
-# Connect to your target database and apply migrations 001 through 005:
+# Connect to your target database and apply migrations 001 through 004:
 psql "$DATABASE_URL" -f supabase/migrations/001_repo_story.sql
 psql "$DATABASE_URL" -f supabase/migrations/002_job_queue.sql
 psql "$DATABASE_URL" -f supabase/migrations/003_auth_and_rls.sql
 psql "$DATABASE_URL" -f supabase/migrations/004_cache_store.sql
-psql "$DATABASE_URL" -f supabase/migrations/005_organizations_and_rbac.sql
 ```
 
 ### 4. Running the Application
@@ -373,7 +372,7 @@ Continuous integration is defined under `.github/workflows/`:
    - `test-integration`: Runs MSW integration tests (`make test-integration`).
    - `build`: Compiles the Next.js production build (`npm run build`).
    - `test-e2e`: Installs Playwright Chromium dependencies and runs `make test-e2e`.
-   - `test-crash`: Spins up PostgreSQL 16 and PostgREST service containers, applies migrations `001`–`005`, and executes `make test-crash`.
+   - `test-crash`: Spins up PostgreSQL 16 and PostgREST service containers, applies migrations `001`–`004`, and executes `make test-crash`.
 2. **Security Scanner (`.github/workflows/security.yml`)**:
    - Triggers on pushes, pull requests, and a weekly schedule (Mondays at 06:00 UTC).
    - Runs GitHub CodeQL static analysis for JavaScript/TypeScript.
@@ -387,12 +386,11 @@ Continuous integration is defined under `.github/workflows/`:
 ## Limitations and Known Issues
 
 1. **Docker Container Verification**: Docker image creation has not been tested in this local environment because Docker Desktop / Docker CLI is not installed on the workstation.
-2. **Database Engine Differences**: Migrations `001` through `005` were validated against PostgreSQL 16. Supabase-specific features (such as real-time subscriptions, Supabase Storage, and built-in GoTrue authentication) require a full Supabase environment or external polyfills.
+2. **Database Engine Differences**: Migrations `001` through `004` were validated against PostgreSQL 16. Supabase-specific features (such as real-time subscriptions, Supabase Storage, and built-in GoTrue authentication) require a full Supabase environment or external polyfills.
 3. **Git LFS Handling**: Git LFS pointer files are detected and skipped by default (`FETCH_LFS=false`). Large LFS binary blobs are not downloaded or parsed unless explicit LFS fetching is configured.
 4. **Git Submodules**: Submodule entries (Git mode `160000`) are flagged in analysis coverage metadata but are not traversed or analyzed by default (`SUBMODULE_MAX_DEPTH=0`).
 5. **AST Parser Engine**: The TypeScript streaming analyzer uses the official TypeScript Compiler API (`typescript`), not `tree-sitter`. (See [Decision 006](file:///Users/macbookair/CODING/EXPLAIN_ARCH/repo-story/docs/decisions/006-phase3-scaling-foundations.md)).
-6. **Phase 3 Foundations Status**: Multi-tenant organizations, incremental analysis planners, and streaming analyzers exist as backend foundations with schema migrations, domain logic, and unit tests. Full organization management UI and GitHub webhook automation remain roadmap deliverables.
-7. **Development Fallbacks**: When running without external infrastructure, NextAuth uses fallback client credentials, and rate limiting falls back to an in-memory sliding window when Upstash Redis credentials are omitted.
+6. **Development Fallbacks**: When running without external infrastructure, NextAuth uses fallback client credentials, and rate limiting falls back to an in-memory sliding window when Upstash Redis credentials are omitted.
 
 ---
 
@@ -419,7 +417,7 @@ repo-story/
 │   ├── middleware.ts        # Next.js security headers, HSTS, and CORS enforcement proxy
 │   └── worker.ts            # Background job worker entry point
 ├── supabase/
-│   └── migrations/          # PostgreSQL database migrations (001_repo_story through 005_organizations)
+│   └── migrations/          # PostgreSQL database migrations (001_repo_story through 004_cache_store)
 ├── tests/
 │   ├── component/           # React component unit tests (React Testing Library)
 │   ├── e2e/                 # Playwright end-to-end browser smoke test suite
