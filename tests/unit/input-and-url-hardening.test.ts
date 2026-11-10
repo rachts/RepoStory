@@ -104,9 +104,9 @@ describe("Workstream 4: Input and URL hardening", () => {
     });
 
     it("rejects probe request when path is hostile or unauthorized", () => {
-      expect(() => buildSafeGitHubApiUrl("/admin")).toThrow(/must start with \/repos\/ or be \/zen/i);
-      expect(() => buildSafeGitHubApiUrl("/users")).toThrow(/must start with \/repos\/ or be \/zen/i);
-      expect(() => buildSafeGitHubApiUrl("../internal")).toThrow(/must start with \/repos\/ or be \/zen/i);
+      expect(() => buildSafeGitHubApiUrl("/admin")).toThrow(/must start with \/repos\//);
+      expect(() => buildSafeGitHubApiUrl("/users")).toThrow(/must start with \/repos\//);
+      expect(() => buildSafeGitHubApiUrl("../internal")).toThrow(/must start with \/repos\//);
     });
   });
 });
