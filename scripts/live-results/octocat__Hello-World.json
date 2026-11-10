@@ -1,0 +1,227 @@
+{
+  "repoUrl": "https://github.com/octocat/Hello-World",
+  "jobId": "job-ebae83c6-aee3-406f-aa5b-0abf77def81c",
+  "analysisId": "analysis-486c05b3-8132-4cfb-8f45-96553715ce31",
+  "durationMs": 1039,
+  "finalStatus": "completed",
+  "finalStage": "completed",
+  "message": "Analysis complete.",
+  "rateLimitUsedDiff": 2,
+  "diagramsCount": 1,
+  "diagramTypes": [
+    "repository-structure"
+  ],
+  "jobJson": {
+    "jobId": "job-ebae83c6-aee3-406f-aa5b-0abf77def81c",
+    "analysisId": "analysis-486c05b3-8132-4cfb-8f45-96553715ce31",
+    "repositoryUrl": "https://github.com/octocat/Hello-World",
+    "branch": "default",
+    "status": "completed",
+    "stage": "completed",
+    "progress": 100,
+    "message": "Analysis complete.",
+    "createdAt": "2026-11-10T08:16:06.430Z",
+    "updatedAt": "2026-11-10T08:16:07.358Z",
+    "expiresAt": "2026-11-10T08:56:06.430Z",
+    "retryCount": 0,
+    "explanationRequested": false,
+    "cancellationRequested": false,
+    "coverage": {
+      "filesConsidered": 0,
+      "filesSkipped": 1,
+      "filesSkippedByReason": {
+        "tooLarge": 0,
+        "unsupported": 0,
+        "limitReached": 0
+      },
+      "filesSkippedDetails": [],
+      "skippedFiles": [],
+      "warnings": [],
+      "analyzedPercent": 0,
+      "treeTruncated": false,
+      "analysisConfidence": "medium"
+    },
+    "statusUrl": "/api/analyze/jobs/job-ebae83c6-aee3-406f-aa5b-0abf77def81c",
+    "resultUrl": "/api/analyze/analysis-486c05b3-8132-4cfb-8f45-96553715ce31"
+  },
+  "analysisJson": {
+    "id": "analysis-486c05b3-8132-4cfb-8f45-96553715ce31",
+    "repository": {
+      "id": "1296269",
+      "owner": "octocat",
+      "name": "Hello-World",
+      "url": "https://github.com/octocat/Hello-World",
+      "defaultBranch": "master",
+      "selectedBranch": "master",
+      "commitSha": "7fd1a60b01f91b314f59955a4e4d4e80d8edf11d",
+      "description": "My first repository on GitHub!",
+      "sizeBytes": 1024,
+      "fileCount": 0
+    },
+    "status": "completed",
+    "stage": "completed",
+    "progressPercent": 100,
+    "filesDiscovered": 1,
+    "filesAnalyzed": 0,
+    "technologies": [],
+    "findings": [],
+    "diagramIds": [
+      "diagram-d9414fe2-bced-4ed7-b13f-888e14b32a72"
+    ],
+    "createdAt": "2026-11-10T08:16:06.432Z",
+    "apiRoutes": [],
+    "moduleRelationships": [],
+    "databases": [],
+    "externalIntegrations": [],
+    "authentication": [],
+    "diagramAvailability": [
+      {
+        "type": "repository-structure",
+        "available": true,
+        "confidence": "high"
+      },
+      {
+        "type": "system-overview",
+        "available": false,
+        "reason": "Not enough technology evidence was found."
+      },
+      {
+        "type": "api-request-flow",
+        "available": false,
+        "reason": "No evidence-backed API routes were detected."
+      },
+      {
+        "type": "authentication-flow",
+        "available": false,
+        "reason": "No meaningful authentication evidence was detected."
+      }
+    ],
+    "diagrams": [
+      {
+        "id": "diagram-d9414fe2-bced-4ed7-b13f-888e14b32a72",
+        "analysisId": "analysis-486c05b3-8132-4cfb-8f45-96553715ce31",
+        "type": "repository-structure",
+        "title": "Repository structure",
+        "description": "Top-level areas inferred from analyzed files.",
+        "direction": "TB",
+        "nodes": [
+          {
+            "id": "repo",
+            "technicalLabel": "Hello-World",
+            "plainEnglishLabel": "Repository",
+            "explanation": "My first repository on GitHub!",
+            "kind": "directory",
+            "visible": true,
+            "confidence": "high",
+            "evidence": []
+          }
+        ],
+        "edges": [],
+        "createdAt": "2026-11-10T08:16:07.355Z",
+        "updatedAt": "2026-11-10T08:16:07.355Z"
+      }
+    ],
+    "architectureStory": {
+      "id": "architecture-story-f902d468",
+      "headline": "How Hello-World works",
+      "summary": "The repository does not provide enough evidence to describe how the application works.",
+      "plainEnglishSummary": "The repository does not provide enough evidence to describe how the application works.",
+      "confidence": "needs-verification",
+      "evidence": [],
+      "actors": [],
+      "steps": [],
+      "layers": [],
+      "relationships": [],
+      "coverage": {
+        "status": "empty",
+        "partial": true,
+        "filesAnalyzed": 0,
+        "filesDiscovered": 1,
+        "analyzedFiles": 0,
+        "discoveredFiles": 1,
+        "filesSkipped": 1,
+        "bytesAnalyzed": 0,
+        "bytesDiscovered": 0,
+        "bytesSkipped": 0,
+        "evidenceBackedFindings": 0,
+        "evidenceBackedElements": 0,
+        "availableDiagramTypes": [
+          "repository-structure"
+        ],
+        "unavailableDiagramTypes": [
+          {
+            "type": "system-overview",
+            "available": false,
+            "reason": "Not enough technology evidence was found."
+          },
+          {
+            "type": "api-request-flow",
+            "available": false,
+            "reason": "No evidence-backed API routes were detected."
+          },
+          {
+            "type": "authentication-flow",
+            "available": false,
+            "reason": "No meaningful authentication evidence was detected."
+          }
+        ],
+        "diagramAvailability": [
+          {
+            "type": "repository-structure",
+            "available": true,
+            "confidence": "high"
+          },
+          {
+            "type": "system-overview",
+            "available": false,
+            "reason": "Not enough technology evidence was found."
+          },
+          {
+            "type": "api-request-flow",
+            "available": false,
+            "reason": "No evidence-backed API routes were detected."
+          },
+          {
+            "type": "authentication-flow",
+            "available": false,
+            "reason": "No meaningful authentication evidence was detected."
+          }
+        ],
+        "repositoryStructureAvailable": true,
+        "systemOverviewAvailable": false,
+        "apiRequestFlowAvailable": false,
+        "authenticationFlowAvailable": false,
+        "caveats": [
+          "Only 0 of 1 discovered files were analyzed, so this story has partial repository coverage.",
+          "System overview is unavailable: Not enough technology evidence was found.",
+          "API request flow is unavailable: No evidence-backed API routes were detected.",
+          "Authentication flow is unavailable: No meaningful authentication evidence was detected.",
+          "No evidence-backed actors, steps, layers, or relationships were found."
+        ]
+      },
+      "caveats": [
+        "Only 0 of 1 discovered files were analyzed, so this story has partial repository coverage.",
+        "System overview is unavailable: Not enough technology evidence was found.",
+        "API request flow is unavailable: No evidence-backed API routes were detected.",
+        "Authentication flow is unavailable: No meaningful authentication evidence was detected.",
+        "No evidence-backed actors, steps, layers, or relationships were found."
+      ]
+    },
+    "coverage": {
+      "filesConsidered": 0,
+      "filesSkipped": 1,
+      "filesSkippedByReason": {
+        "tooLarge": 0,
+        "unsupported": 0,
+        "limitReached": 0
+      },
+      "filesSkippedDetails": [],
+      "skippedFiles": [],
+      "warnings": [],
+      "analyzedPercent": 0,
+      "treeTruncated": false,
+      "analysisConfidence": "medium"
+    },
+    "completedAt": "2026-11-10T08:16:07.356Z"
+  }
+}
