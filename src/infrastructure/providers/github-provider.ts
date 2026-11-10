@@ -265,6 +265,48 @@ function decodeGitHubContent(encoded: string, maxBytes: number): JsonResult<{ co
   }
 }
 
+export interface DebugRequestProfile {
+  total: number;
+  byEndpoint: {
+    "/repos": number;
+    "/git/trees": number;
+    "/contents": number;
+    "/git/blobs": number;
+    "/compare": number;
+    other: number;
+  };
+}
+
+let debugRequestProfile: DebugRequestProfile = {
+  total: 0,
+  byEndpoint: {
+    "/repos": 0,
+    "/git/trees": 0,
+    "/contents": 0,
+    "/git/blobs": 0,
+    "/compare": 0,
+    other: 0,
+  },
+};
+
+export function getDebugRequestProfile(): DebugRequestProfile {
+  return structuredClone(debugRequestProfile);
+}
+
+export function resetDebugRequestProfile(): void {
+  debugRequestProfile = {
+    total: 0,
+    byEndpoint: {
+      "/repos": 0,
+      "/git/trees": 0,
+      "/contents": 0,
+      "/git/blobs": 0,
+      "/compare": 0,
+      other: 0,
+    },
+  };
+}
+
 export class GitHubPublicRepositoryProvider implements RepositoryProvider {
   public readonly octokit: InstanceType<typeof ResilientOctokit>;
   private readonly fetchImpl: typeof fetch;
@@ -379,6 +421,24 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       });
 
       repostoryGitHubRequestsTotal.inc({ endpoint: stage, status: String(response.status) });
+
+      if (process.env.REPO_STORY_DEBUG_REQUESTS === "1") {
+        debugRequestProfile.total += 1;
+        const pathname = currentUrl.pathname;
+        if (pathname.includes("/git/trees")) {
+          debugRequestProfile.byEndpoint["/git/trees"] += 1;
+        } else if (pathname.includes("/contents")) {
+          debugRequestProfile.byEndpoint["/contents"] += 1;
+        } else if (pathname.includes("/git/blobs")) {
+          debugRequestProfile.byEndpoint["/git/blobs"] += 1;
+        } else if (pathname.includes("/compare")) {
+          debugRequestProfile.byEndpoint["/compare"] += 1;
+        } else if (pathname.startsWith("/repos/") || pathname.startsWith("/repositories/")) {
+          debugRequestProfile.byEndpoint["/repos"] += 1;
+        } else {
+          debugRequestProfile.byEndpoint.other += 1;
+        }
+      }
 
       this.tokenPool.updateRateLimit(
         token,
