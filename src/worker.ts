@@ -1,5 +1,22 @@
+import http from "node:http";
+
 // Register module alias resolution before importing @/... modules
 import "./shared/alias-register";
+
+// Dummy health-check HTTP server for platforms (like Render Web Services) that scan for an open port
+const port = process.env.PORT || 10000;
+const healthServer = http.createServer((_req, res) => {
+  res.writeHead(200, { "Content-Type": "application/json" });
+  res.end(JSON.stringify({ status: "healthy" }));
+});
+
+healthServer.on("error", (err) => {
+  console.error(`[RepoStory Worker] Health check server error:`, err);
+});
+
+healthServer.listen(port, () => {
+  console.log(`Health check server listening on port ${port}`);
+});
 
 import { assertProductionGuards } from "@/config/production-guards";
 
@@ -30,6 +47,7 @@ worker.start();
 
 const shutdown = async (signal: string) => {
   logger.info({ workerId, signal }, `[RepoStory Worker] Received ${signal}. Shutting down gracefully...`);
+  healthServer.close();
   await worker.stop();
   process.exit(0);
 };
