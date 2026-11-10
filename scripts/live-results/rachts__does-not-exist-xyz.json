@@ -1,0 +1,34 @@
+{
+  "repoUrl": "https://github.com/rachts/does-not-exist-xyz",
+  "jobId": "job-e65019c1-0d89-4034-b407-2f72a783b212",
+  "analysisId": "analysis-a714ed1f-fdf7-48eb-84a3-20c06d6ad1e0",
+  "durationMs": 1019,
+  "finalStatus": "failed",
+  "finalStage": "completed",
+  "message": "The repository analysis failed.",
+  "errorCode": "REPOSITORY_NOT_FOUND",
+  "rateLimitUsedDiff": 1,
+  "jobJson": {
+    "jobId": "job-e65019c1-0d89-4034-b407-2f72a783b212",
+    "analysisId": "analysis-a714ed1f-fdf7-48eb-84a3-20c06d6ad1e0",
+    "repositoryUrl": "https://github.com/rachts/does-not-exist-xyz",
+    "branch": "default",
+    "status": "failed",
+    "stage": "completed",
+    "progress": 100,
+    "message": "The repository analysis failed.",
+    "createdAt": "2026-11-10T08:16:08.239Z",
+    "updatedAt": "2026-11-10T08:16:08.634Z",
+    "expiresAt": "2026-11-10T08:56:08.239Z",
+    "retryCount": 0,
+    "explanationRequested": false,
+    "cancellationRequested": false,
+    "error": {
+      "code": "REPOSITORY_NOT_FOUND",
+      "message": "GitHub repository not found.",
+      "retryable": false
+    },
+    "statusUrl": "/api/analyze/jobs/job-e65019c1-0d89-4034-b407-2f72a783b212",
+    "resultUrl": "/api/analyze/analysis-a714ed1f-fdf7-48eb-84a3-20c06d6ad1e0"
+  }
+}
