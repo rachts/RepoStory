@@ -31,3 +31,4 @@ done
 PGPASSWORD=password psql -h localhost -U macbookair -d repostory_test -c "NOTIFY pgrst, 'reload schema';"
 sleep 2
 exit 0
+
