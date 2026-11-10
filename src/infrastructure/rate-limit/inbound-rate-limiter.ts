@@ -90,6 +90,8 @@ export function getInboundRateLimiter(): InboundRateLimiter {
     }
   }
 
+  // When Upstash Redis credentials are omitted (e.g. local development, staging, or offline unit tests),
+  // fall back to a local in-memory sliding-window limiter so requests are not rejected without external infra.
   defaultLimiter = new InMemoryRateLimiter({ maxRequests: 10, windowMs: 60_000 });
   return defaultLimiter;
 }
