@@ -23,11 +23,13 @@ export const serverConfig = {
   groqEnabled: booleanValue(process.env.GROQ_ENABLED, true),
   jobStoreMode: process.env.NODE_ENV === "test"
     ? "memory"
-    : process.env.REPO_STORY_JOB_STORE === "memory"
-      ? "memory"
-      : process.env.REPO_STORY_JOB_STORE === "supabase"
-        ? "supabase"
-        : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
+    : process.env.REPO_STORY_JOB_STORE === "file"
+      ? "file"
+      : process.env.REPO_STORY_JOB_STORE === "memory"
+        ? "memory"
+        : process.env.REPO_STORY_JOB_STORE === "supabase"
+          ? "supabase"
+          : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
   cacheStoreMode: process.env.NODE_ENV === "test"
     ? "memory"
     : process.env.REPO_STORY_CACHE_STORE === "memory"

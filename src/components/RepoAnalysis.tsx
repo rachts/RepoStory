@@ -124,7 +124,14 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
             return;
           }
         }
-        if (!response.ok || !payload || typeof payload !== "object" || !("status" in payload)) throw new Error((payload as { error?: { message?: string } } | null)?.error?.message ?? "This analysis could not be loaded.");
+        if (!response.ok || !payload || typeof payload !== "object" || !("status" in payload)) {
+          const errPayload = payload as { error?: { message?: string } | string; message?: string } | null;
+          const msg =
+            (typeof errPayload?.error === "object" ? errPayload?.error?.message : typeof errPayload?.error === "string" ? errPayload.error : undefined) ??
+            (typeof errPayload?.message === "string" ? errPayload.message : undefined) ??
+            "This analysis could not be loaded.";
+          throw new Error(msg);
+        }
         const currentJob = payload as AnalysisJobRecord;
         setJob(currentJob);
         if (currentJob.status === "completed" && currentJob.analysisId) {
@@ -136,7 +143,12 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
             setSelectedId((current) => current && supportedDiagrams.some((item) => item.id === current) ? current : supportedDiagrams[0]?.id ?? null);
             return;
           }
-          throw new Error((resultPayload as { error?: { message?: string } } | null)?.error?.message ?? "The completed analysis result could not be loaded.");
+          const errResult = resultPayload as { error?: { message?: string } | string; message?: string } | null;
+          const msg =
+            (typeof errResult?.error === "object" ? errResult?.error?.message : typeof errResult?.error === "string" ? errResult.error : undefined) ??
+            (typeof errResult?.message === "string" ? errResult.message : undefined) ??
+            "The completed analysis result could not be loaded.";
+          throw new Error(msg);
         }
         if (isTerminalJob(currentJob.status)) return;
         await waitForPoll(signal ?? new AbortController().signal, pollDelays[Math.min(attempt, pollDelays.length - 1)] ?? 5_000);

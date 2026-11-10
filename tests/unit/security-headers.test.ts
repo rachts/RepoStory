@@ -75,7 +75,7 @@ describe("Workstream 10: Security Headers and CORS", () => {
       expect(res.headers.get("x-request-id")).toBeDefined();
     });
 
-    it("blocks cross-origin API calls from unauthorized origins with 403", () => {
+    it("blocks cross-origin API calls from unauthorized origins with structured 403 JSON", async () => {
       const req = new NextRequest("http://localhost:3000/api/analyze", {
         headers: {
           origin: "https://unauthorized-site.com",
@@ -83,6 +83,24 @@ describe("Workstream 10: Security Headers and CORS", () => {
       });
       const res = middleware(req);
       expect(res.status).toBe(403);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const json = await res.json();
+      expect(json.error).toEqual({
+        code: "FORBIDDEN",
+        message: "Cross-origin request forbidden",
+        retryable: false,
+      });
+    });
+
+    it("allows same-origin API calls with matching Origin header without blocking", () => {
+      const req = new NextRequest("http://localhost:3000/api/analyze", {
+        method: "POST",
+        headers: {
+          origin: "http://localhost:3000",
+        },
+      });
+      const res = middleware(req);
+      expect(res.status).not.toBe(403);
     });
   });
 });

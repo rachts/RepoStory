@@ -266,7 +266,7 @@ Configure variables in `.env.local`:
 When `NODE_ENV=production`, the application executes fail-fast configuration checks before serving requests:
 1. **Missing `REPO_STORY_JOB_STORE`**: If unset, initialization halts immediately with exit code 1:
    ```text
-   [RepoStory Config Error] In production, REPO_STORY_JOB_STORE must be explicitly set ('supabase' or 'memory').
+   [RepoStory Config Error] In production, REPO_STORY_JOB_STORE must be explicitly set ('supabase', 'file', or 'memory').
    ```
 2. **Missing `ALLOW_IN_MEMORY_QUEUE`**: If `REPO_STORY_JOB_STORE=memory` is specified in production without explicit permission:
    ```text

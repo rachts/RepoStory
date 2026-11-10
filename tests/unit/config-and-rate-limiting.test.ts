@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { validateEnv } from "@/config/env";
-import { assertProductionGuards } from "@/config/production-guards";
+import { assertProductionGuards, getProductionConfigError } from "@/config/production-guards";
 import { InMemoryRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-limiter";
 
 describe("Workstream 8: Configuration validation and inbound rate limiting", () => {
@@ -94,6 +94,45 @@ describe("Workstream 8: Configuration validation and inbound rate limiting", () 
           SUPABASE_SECRET_KEY: "prod-secret-key-123",
         }, false);
       }).not.toThrow();
+    });
+
+    it("starts without error in production when REPO_STORY_JOB_STORE=file and ALLOW_IN_MEMORY_QUEUE=true", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          REPO_STORY_JOB_STORE: "file",
+          ALLOW_IN_MEMORY_QUEUE: "true",
+        }, false);
+      }).not.toThrow();
+    });
+
+    it("refuses to start in production if REPO_STORY_JOB_STORE has an unsupported value", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          REPO_STORY_JOB_STORE: "redis-unsupported",
+        }, false);
+      }).toThrow(/REPO_STORY_JOB_STORE must be set to 'supabase', 'file', or 'memory'/);
+    });
+
+    it("returns structured CONFIG_ERROR via getProductionConfigError when config is missing", () => {
+      const error = getProductionConfigError({
+        NODE_ENV: "production",
+        // REPO_STORY_JOB_STORE unset
+      });
+      expect(error).not.toBeNull();
+      expect(error?.code).toBe("CONFIG_ERROR");
+      expect(error?.message).toMatch(/In production, REPO_STORY_JOB_STORE must be explicitly set/);
+    });
+
+    it("returns null via getProductionConfigError when valid", () => {
+      const error = getProductionConfigError({
+        NODE_ENV: "production",
+        REPO_STORY_JOB_STORE: "supabase",
+        SUPABASE_URL: "https://xyz.supabase.co",
+        SUPABASE_SECRET_KEY: "prod-secret-key-123",
+      });
+      expect(error).toBeNull();
     });
   });
 
