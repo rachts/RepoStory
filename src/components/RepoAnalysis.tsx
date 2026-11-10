@@ -129,6 +129,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
           const msg =
             (typeof errPayload?.error === "object" ? errPayload?.error?.message : typeof errPayload?.error === "string" ? errPayload.error : undefined) ??
             (typeof errPayload?.message === "string" ? errPayload.message : undefined) ??
+            (response.statusText || (response.status ? `HTTP ${response.status}` : undefined)) ??
             "This analysis could not be loaded.";
           throw new Error(msg);
         }
@@ -147,6 +148,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
           const msg =
             (typeof errResult?.error === "object" ? errResult?.error?.message : typeof errResult?.error === "string" ? errResult.error : undefined) ??
             (typeof errResult?.message === "string" ? errResult.message : undefined) ??
+            (resultResponse.statusText || (resultResponse.status ? `HTTP ${resultResponse.status}` : undefined)) ??
             "The completed analysis result could not be loaded.";
           throw new Error(msg);
         }

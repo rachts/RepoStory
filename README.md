@@ -268,10 +268,11 @@ When `NODE_ENV=production`, the application executes fail-fast configuration che
    ```text
    [RepoStory Config Error] In production, REPO_STORY_JOB_STORE must be explicitly set ('supabase', 'file', or 'memory').
    ```
-2. **Missing `ALLOW_IN_MEMORY_QUEUE`**: If `REPO_STORY_JOB_STORE=memory` is specified in production without explicit permission:
+2. **Missing `ALLOW_IN_MEMORY_QUEUE`**: If `REPO_STORY_JOB_STORE=memory` (or `REPO_STORY_JOB_STORE=file` without a Supabase queue) is specified in production without explicit permission:
    ```text
    [RepoStory Config Error] InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true is explicitly set.
    ```
+   *(Note: for file mode, set `ALLOW_IN_MEMORY_QUEUE=true` because queue persistence requires Supabase or an in-memory queue).*
 3. **Missing Supabase Credentials**: If `REPO_STORY_JOB_STORE=supabase` is specified without `SUPABASE_URL` and `SUPABASE_SECRET_KEY`:
    ```text
    [RepoStory Config Error] In production with Supabase mode, SUPABASE_URL and SUPABASE_SECRET_KEY are required.

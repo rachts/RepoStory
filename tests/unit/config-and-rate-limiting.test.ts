@@ -106,6 +106,15 @@ describe("Workstream 8: Configuration validation and inbound rate limiting", () 
       }).not.toThrow();
     });
 
+    it("refuses to start in production if REPO_STORY_JOB_STORE=file without ALLOW_IN_MEMORY_QUEUE=true and no Supabase queue", () => {
+      expect(() => {
+        assertProductionGuards({
+          NODE_ENV: "production",
+          REPO_STORY_JOB_STORE: "file",
+        }, false);
+      }).toThrow(/InMemoryJobQueue is not allowed in production unless ALLOW_IN_MEMORY_QUEUE=true/);
+    });
+
     it("refuses to start in production if REPO_STORY_JOB_STORE has an unsupported value", () => {
       expect(() => {
         assertProductionGuards({

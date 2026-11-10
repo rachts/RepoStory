@@ -1,6 +1,10 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { POST } from "@/app/api/analyze/route";
 import { register } from "@/instrumentation";
+import { assertProductionGuards, getProductionConfigError } from "@/config/production-guards";
+import { analysisRepository, analysisJobRunner } from "@/composition/container";
+import type { AnalysisJobRepository } from "@/application/jobs/analysis-job-repository";
+import type { AnalysisJobRecord } from "@/domain/analysis";
 
 describe("Production startup guards & /api/analyze error contract", () => {
   const originalEnv = { ...process.env };
@@ -106,6 +110,94 @@ describe("Production startup guards & /api/analyze error contract", () => {
     );
 
     consoleErrorSpy.mockRestore();
+  });
+
+  it("assertProductionGuards() still exits/throws by default (fail-fast behavior retained)", () => {
+    setNodeEnv("production");
+    delete process.env.REPO_STORY_JOB_STORE;
+
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+
+    expect(() => {
+      // Called with default exitOnError parameter
+      assertProductionGuards(process.env, true);
+    }).toThrow();
+    expect(exitSpy).toHaveBeenCalledWith(1);
+
+    exitSpy.mockRestore();
+  });
+
+  it("getProductionConfigError() returns CONFIG_ERROR for each invalid case and null when valid", () => {
+    // 1. Missing REPO_STORY_JOB_STORE
+    const errMissing = getProductionConfigError({ NODE_ENV: "production" });
+    expect(errMissing?.code).toBe("CONFIG_ERROR");
+    expect(errMissing?.message).toContain("In production, REPO_STORY_JOB_STORE must be explicitly set");
+
+    // 2. Invalid REPO_STORY_JOB_STORE
+    const errInvalid = getProductionConfigError({ NODE_ENV: "production", REPO_STORY_JOB_STORE: "redis-unsupported" });
+    expect(errInvalid?.code).toBe("CONFIG_ERROR");
+    expect(errInvalid?.message).toContain("REPO_STORY_JOB_STORE must be set to 'supabase', 'file', or 'memory'");
+
+    // 3. Memory without queue permission
+    const errMem = getProductionConfigError({ NODE_ENV: "production", REPO_STORY_JOB_STORE: "memory", ALLOW_IN_MEMORY_STORE: "true" });
+    expect(errMem?.code).toBe("CONFIG_ERROR");
+    expect(errMem?.message).toContain("InMemoryJobQueue is not allowed");
+
+    // 4. File without queue permission
+    const errFile = getProductionConfigError({ NODE_ENV: "production", REPO_STORY_JOB_STORE: "file" });
+    expect(errFile?.code).toBe("CONFIG_ERROR");
+    expect(errFile?.message).toContain("ALLOW_IN_MEMORY_QUEUE=true is explicitly set");
+
+    // 5. Supabase without credentials
+    const errSupa = getProductionConfigError({ NODE_ENV: "production", REPO_STORY_JOB_STORE: "supabase" });
+    expect(errSupa?.code).toBe("CONFIG_ERROR");
+    expect(errSupa?.message).toContain("SUPABASE_URL and SUPABASE_SECRET_KEY are required");
+
+    // 6. Valid cases return null
+    expect(getProductionConfigError({
+      NODE_ENV: "production",
+      REPO_STORY_JOB_STORE: "file",
+      ALLOW_IN_MEMORY_QUEUE: "true",
+    })).toBeNull();
+
+    expect(getProductionConfigError({
+      NODE_ENV: "production",
+      REPO_STORY_JOB_STORE: "supabase",
+      SUPABASE_URL: "https://xyz.supabase.co",
+      SUPABASE_SECRET_KEY: "secret",
+    })).toBeNull();
+  });
+
+  it("lazy container proxies still respect vi.spyOn and globalContainer overrides after first access", async () => {
+    // First access to analysisRepository
+    expect(analysisRepository).toBeDefined();
+    const initialJob = await analysisRepository.getJob("non-existent-probe-id");
+    expect(initialJob).toBeUndefined();
+
+    // Override globalContainer.repoStoryAnalysisRepository AFTER first access
+    const mockJobRecord = { jobId: "overridden-job-123", status: "completed" } as unknown as AnalysisJobRecord;
+    const mockRepo = {
+      getJob: vi.fn().mockResolvedValue(mockJobRecord),
+    } as unknown as AnalysisJobRepository;
+    const globalObj = globalThis as { repoStoryAnalysisRepository?: AnalysisJobRepository };
+    globalObj.repoStoryAnalysisRepository = mockRepo;
+
+    // Subsequent access must resolve to the overridden instance
+    const overriddenJob = await analysisRepository.getJob("overridden-job-123");
+    expect(overriddenJob).toEqual(mockJobRecord);
+    expect(mockRepo.getJob).toHaveBeenCalledWith("overridden-job-123");
+
+    // Clean up globalContainer override
+    delete globalObj.repoStoryAnalysisRepository;
+
+    // First access to analysisJobRunner
+    expect(analysisJobRunner).toBeDefined();
+
+    // vi.spyOn AFTER first access
+    const enqueueSpy = vi.spyOn(analysisJobRunner, "enqueue").mockImplementation(() => undefined);
+    analysisJobRunner.enqueue("job-test-spy-123");
+    expect(enqueueSpy).toHaveBeenCalledWith("job-test-spy-123");
+    enqueueSpy.mockRestore();
   });
 
   describe("Frontend error message extraction logic", () => {
