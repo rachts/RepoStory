@@ -15,13 +15,27 @@ export function assertProductionGuards(
 
   // 1. REPO_STORY_JOB_STORE must be explicitly set in production
   if (!customEnv.REPO_STORY_JOB_STORE) {
-    const errorMsg = "[RepoStory Config Error] In production, REPO_STORY_JOB_STORE must be explicitly set ('supabase' or 'memory').";
+    const errorMsg = "[RepoStory Config Error] In production, REPO_STORY_JOB_STORE must be explicitly set ('supabase', 'file', or 'memory').";
     console.error(errorMsg);
     if (exitOnError) {
       process.exit(1);
     }
     throw new AppError({
-      code: "INVALID_CONFIGURATION",
+      code: "CONFIG_ERROR",
+      message: errorMsg,
+      retryable: false,
+    });
+  }
+
+  const validStores = ["supabase", "file", "memory"];
+  if (!validStores.includes(customEnv.REPO_STORY_JOB_STORE)) {
+    const errorMsg = "[RepoStory Config Error] REPO_STORY_JOB_STORE must be set to 'supabase', 'file', or 'memory' in production.";
+    console.error(errorMsg);
+    if (exitOnError) {
+      process.exit(1);
+    }
+    throw new AppError({
+      code: "CONFIG_ERROR",
       message: errorMsg,
       retryable: false,
     });
@@ -36,20 +50,20 @@ export function assertProductionGuards(
         process.exit(1);
       }
       throw new AppError({
-        code: "INVALID_CONFIGURATION",
+        code: "CONFIG_ERROR",
         message: errorMsg,
         retryable: false,
       });
     }
 
-    if (customEnv.ALLOW_IN_MEMORY_STORE !== "true") {
+    if (customEnv.REPO_STORY_JOB_STORE === "memory" && customEnv.ALLOW_IN_MEMORY_STORE !== "true") {
       const errorMsg = "[RepoStory Config Error] InMemoryAnalysisStore is not allowed in production unless ALLOW_IN_MEMORY_STORE=true is explicitly set.";
       console.error(errorMsg);
       if (exitOnError) {
         process.exit(1);
       }
       throw new AppError({
-        code: "INVALID_CONFIGURATION",
+        code: "CONFIG_ERROR",
         message: errorMsg,
         retryable: false,
       });
@@ -68,10 +82,26 @@ export function assertProductionGuards(
         process.exit(1);
       }
       throw new AppError({
-        code: "INVALID_CONFIGURATION",
+        code: "CONFIG_ERROR",
         message: errorMsg,
         retryable: false,
       });
     }
+  }
+}
+
+export function getProductionConfigError(
+  customEnv: Record<string, string | undefined> = process.env,
+): AppError | null {
+  try {
+    assertProductionGuards(customEnv, false);
+    return null;
+  } catch (error) {
+    if (error instanceof AppError) return error;
+    return new AppError({
+      code: "CONFIG_ERROR",
+      message: error instanceof Error ? error.message : String(error),
+      retryable: false,
+    });
   }
 }

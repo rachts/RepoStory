@@ -12,6 +12,7 @@ import { getInboundRateLimiter } from "@/infrastructure/rate-limit/inbound-rate-
 import { opaqueId, nowIso } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
+import { getProductionConfigError } from "@/config/production-guards";
 
 const MAX_REQUEST_BYTES = 8 * 1024;
 
@@ -23,6 +24,20 @@ const requestSchema = z.object({
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
+    const configError = getProductionConfigError();
+    if (configError) {
+      return jsonResponse(
+        {
+          error: {
+            code: "CONFIG_ERROR",
+            message: configError.message,
+            retryable: false,
+          },
+        },
+        { status: 500 },
+      );
+    }
+
     const identityResult = await resolveRequestIdentity(request, analysisRepository);
     if (!identityResult.ok) {
       return jsonResponse({ error: { code: identityResult.error.code, message: identityResult.error.message, retryable: false } }, { status: 401 });
