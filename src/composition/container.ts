@@ -5,6 +5,9 @@ import { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import { GitHubPublicRepositoryProvider } from "@/infrastructure/providers/github-provider";
 import { FileAnalysisJobRepository } from "@/infrastructure/jobs/file-analysis-job-repository";
 import { SupabaseAnalysisJobRepository } from "@/infrastructure/jobs/supabase-analysis-job-repository";
+import type { CacheStore } from "@/application/cache/cache-store";
+import { InMemoryCacheStore } from "@/infrastructure/cache/in-memory-cache-store";
+import { SupabaseCacheStore } from "@/infrastructure/cache/supabase-cache-store";
 import { serverConfig } from "@/shared/config";
 import type { AnalysisJob } from "@/domain/analysis";
 import type { JobQueue } from "@/application/jobs/job-queue";
@@ -22,7 +25,15 @@ const globalContainer = globalThis as typeof globalThis & {
   repoStoryAnalysisRepository?: AnalysisJobRepository;
   repoStoryJobRunner?: AnalysisJobRunner;
   repoStoryJobQueue?: JobQueue;
+  repoStoryCacheStore?: CacheStore;
 };
+
+export const cacheStore: CacheStore = globalContainer.repoStoryCacheStore ?? (
+  serverConfig.cacheStoreMode === "supabase" && serverConfig.supabaseUrl && serverConfig.supabaseSecretKey
+    ? new SupabaseCacheStore({ url: serverConfig.supabaseUrl, secretKey: serverConfig.supabaseSecretKey })
+    : new InMemoryCacheStore()
+);
+globalContainer.repoStoryCacheStore = cacheStore;
 
 export const analysisStore = globalContainer.repoStoryStore ?? new InMemoryAnalysisStore({
   maxAnalyses: serverConfig.maxAnalyses,
@@ -33,6 +44,7 @@ globalContainer.repoStoryStore = analysisStore;
 
 export const repositoryProvider = new GitHubPublicRepositoryProvider({
   token: serverConfig.githubToken,
+  cacheStore,
 });
 
 export const analysisRepository: AnalysisJobRepository = globalContainer.repoStoryAnalysisRepository ?? (
@@ -78,7 +90,10 @@ export async function runAnalysis(
 
   activeAnalyses += 1;
   try {
-    return await runAnalysisPipeline(reference, provider, store, options);
+    return await runAnalysisPipeline(reference, provider, store, {
+      cacheStore,
+      ...options,
+    });
   } finally {
     activeAnalyses -= 1;
   }

@@ -21,6 +21,7 @@ export interface AnalysisRunOptions {
   signal?: AbortSignal;
   files?: RepositoryFile[] | AsyncIterable<RepositoryFile>;
   onProgress?: (progress: { stage: AnalysisResult["stage"]; progress: number; message: string }) => void;
+  cacheStore?: import("@/application/cache/cache-store").CacheStore;
 }
 
 function fileBytes(file: RepositoryFile): number {
@@ -140,6 +141,25 @@ export async function runAnalysis(
     return err(error);
   };
 
+  const cacheStore = options.cacheStore ?? provider.cacheStore;
+  const isCommitSha = reference.branch && /^[0-9a-f]{40}$/i.test(reference.branch);
+
+  if (isCommitSha && cacheStore) {
+    const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${reference.branch}:analysis`;
+    const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
+    if (cached) {
+      job = {
+        ...cached,
+        id,
+        createdAt: started,
+        completedAt: nowIso(),
+      };
+      store.save(job);
+      progress("completed", 100, "Analysis complete (cached)");
+      return ok(job);
+    }
+  }
+
   try {
     let repository: typeof job.repository;
     const rawFiles: RepositoryFile[] = [];
@@ -157,11 +177,31 @@ export async function runAnalysis(
       }
     } else {
       progress("fetching-metadata", 12, "Reading repository metadata");
-      const snapshot = await withSpan("fetch-metadata", async () => provider.getSnapshot(reference, signal, budget));
+      const snapshot = await withSpan("fetch-metadata", async () => provider.getSnapshot(reference, signal, budget, (p) => {
+        progress(p.stage as AnalysisResult["stage"], p.progress, p.message);
+      }));
       if (!snapshot.ok) return fail(snapshot.error);
       budget.check();
       repository = redactPathValues(snapshot.value.repository, budget);
       snapshotCoverage = snapshot.value.coverage;
+
+      const resolvedCommitSha = snapshot.value.repository.commitSha ?? reference.branch;
+      if (resolvedCommitSha && cacheStore) {
+        const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
+        const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
+        if (cached) {
+          job = {
+            ...cached,
+            id,
+            repository: snapshot.value.repository,
+            createdAt: started,
+            completedAt: nowIso(),
+          };
+          store.save(job);
+          progress("completed", 100, "Analysis complete (cached)");
+          return ok(job);
+        }
+      }
 
       if (Symbol.asyncIterator in snapshot.value.files) {
         for await (const file of snapshot.value.files) {
@@ -235,6 +275,17 @@ export async function runAnalysis(
     repostoryJobDurationSeconds.observe({ stage: "completed" }, (Date.now() - new Date(started).getTime()) / 1000);
     job = redactPathValues({ ...job, repository, status: "completed", stage: "completed", progressPercent: 100, filesDiscovered, filesAnalyzed, technologies, findings: safeFindings, apiRoutes: phase3.apiRoutes, moduleRelationships: phase3.moduleRelationships, databases: phase3.databases, externalIntegrations: phase3.externalIntegrations, authentication: phase3.authentication, diagramAvailability, diagramIds: diagrams.map((diagram) => diagram.id), diagrams, architectureStory, coverage, completedAt: nowIso() }, budget);
     store.save(job);
+
+    const resolvedCommitSha = repository.commitSha ?? reference.branch;
+    if (resolvedCommitSha && cacheStore) {
+      const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
+      await cacheStore.set(analysisCacheKey, job, 3_600_000);
+    }
+    if (reference.branch && cacheStore && reference.branch !== resolvedCommitSha) {
+      const branchCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${reference.branch}:analysis`;
+      await cacheStore.set(branchCacheKey, job, 3_600_000);
+    }
+
     return ok(job);
   } catch (error) {
     if (error instanceof AppError) return fail(error);

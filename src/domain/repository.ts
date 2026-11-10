@@ -8,6 +8,7 @@ export interface Repository {
   description?: string;
   sizeBytes: number;
   fileCount: number;
+  commitSha?: string;
 }
 
 export interface RepositoryFile {
@@ -34,6 +35,7 @@ export interface RepositorySnapshot {
 }
 
 export interface RepositoryProvider {
+  readonly cacheStore?: import("@/application/cache/cache-store").CacheStore;
   getSnapshot(
     reference: RepositoryReference,
     signal?: AbortSignal,

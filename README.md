@@ -242,6 +242,7 @@ Configure variables in `.env.local`:
 | `ANALYSIS_DAILY_QUOTA` | Optional | `5` | Daily UTC analysis limit per user. Read by `src/config/env.ts`. |
 | `REPO_STORY_JOB_STORE` | **Required** in prod | `memory` (dev) | Storage backend (`supabase`, `file`, or `memory`). Read by `src/config/production-guards.ts`. |
 | `REPO_STORY_JOB_STORE_PATH`| Optional | `.repo-story-data/state.json`| File path used when `REPO_STORY_JOB_STORE=file`. Read by `src/composition/container.ts`. |
+| `REPO_STORY_CACHE_STORE`| Optional | `supabase` (prod) / `memory` (dev)| Cache backend for commit trees, archives, and processed analyses (`supabase` or `memory`). Read by `src/shared/config.ts`. |
 | `SUPABASE_URL` | **Required** if Supabase | *empty* | Supabase project REST URL. Read by `src/shared/config.ts`. |
 | `SUPABASE_SECRET_KEY` | **Required** if Supabase | *empty* | Supabase service role secret key. Read by `src/shared/config.ts`. |
 | `ALLOW_IN_MEMORY_QUEUE` | Optional | `false` | Explicit bypass permitting in-memory queue in production. Read by `src/config/production-guards.ts`. |

@@ -28,6 +28,13 @@ export const serverConfig = {
       : process.env.REPO_STORY_JOB_STORE === "supabase"
         ? "supabase"
         : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
+  cacheStoreMode: process.env.NODE_ENV === "test"
+    ? "memory"
+    : process.env.REPO_STORY_CACHE_STORE === "memory"
+      ? "memory"
+      : process.env.REPO_STORY_CACHE_STORE === "supabase"
+        ? "supabase"
+        : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
   queueMode: process.env.NODE_ENV === "test"
     ? "memory"
     : process.env.REPO_STORY_QUEUE_MODE === "memory"
