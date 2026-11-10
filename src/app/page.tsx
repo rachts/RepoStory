@@ -35,8 +35,16 @@ export default function Home(): React.JSX.Element {
         body: JSON.stringify({ repositoryUrl: url.trim() }),
       });
       if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as { error?: { message?: string } } | null;
-        throw new Error(payload?.error?.message ?? "The repository could not be analyzed.");
+        const payload = (await response.json().catch(() => null)) as {
+          error?: { message?: string } | string;
+          message?: string;
+        } | null;
+        const errorMessage =
+          (typeof payload?.error === "object" ? payload?.error?.message : typeof payload?.error === "string" ? payload.error : undefined) ??
+          (typeof payload?.message === "string" ? payload.message : undefined) ??
+          (response.statusText || (response.status ? `HTTP ${response.status}` : undefined)) ??
+          "The repository could not be analyzed.";
+        throw new Error(errorMessage);
       }
        const payload = (await response.json()) as { jobId?: string };
        if (!payload.jobId) throw new Error("The analysis response was incomplete.");

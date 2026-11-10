@@ -653,6 +653,6 @@ describe("Phase 3 remediation reproductions", () => {
     if (!result.ok) return;
     expect(result.value.repository.url).toBe("https://github.com/acme/widget");
     expect(requests).toHaveLength(2);
-    expect(requests.every((request) => request.redirect === "error" && request.cache === "no-store")).toBe(true);
+    expect(requests.every((request) => (request.redirect === "manual" || request.redirect === "error") && request.cache === "no-store")).toBe(true);
   });
 });

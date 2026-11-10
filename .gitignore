@@ -14,6 +14,7 @@
 /dist/
 /out/
 /next-env.d.ts
+AGENTS.md
 
 # Testing and reports
 /coverage/

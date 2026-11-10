@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { analysisRepository, analysisStore } from "@/composition/container";
-import { ownerIdFromRequest } from "@/application/jobs/job-identity";
+import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { toMermaid } from "@/analysis/exports";
 import { z } from "zod";
 import { AppError } from "@/domain/errors";
@@ -26,9 +26,23 @@ const patchSchema = z.object({
 export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { diagramId } = await context.params;
   if (diagramId.length > 256) return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
-  const { ownerId } = ownerIdFromRequest(request);
-  const diagram = await analysisRepository.getAnalysisDiagram(diagramId, ownerId) ?? analysisStore.getDiagram(diagramId);
+
+  const identity = await resolveRequestIdentity(request, analysisRepository);
+  if (!identity.ok) {
+    return jsonResponse({ error: { code: identity.error.code, message: identity.error.message, retryable: false } }, { status: 401 });
+  }
+
+  const ownerId = identity.value.ownerId;
+  const repositoryDiagram = await analysisRepository.getAnalysisDiagram(diagramId, ownerId);
+  const diagram = repositoryDiagram ?? analysisStore.getDiagram(diagramId);
   if (!diagram) return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+
+  // Ownership verification if associated with a durable job
+  const job = await analysisRepository.getJobByAnalysisId(diagram.analysisId);
+  if (job && job.ownerId !== ownerId) {
+    return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+  }
+
   const safeDiagram = redactPathValues(diagram);
   return jsonResponse({ diagram: safeDiagram, mermaid: toMermaid(safeDiagram) });
 }
@@ -36,9 +50,22 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
 export async function PATCH(request: Request, context: RouteContext): Promise<NextResponse> {
   const { diagramId } = await context.params;
   if (diagramId.length > 256) return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
-  const { ownerId } = ownerIdFromRequest(request);
-  const diagram = await analysisRepository.getAnalysisDiagram(diagramId, ownerId) ?? analysisStore.getDiagram(diagramId);
+
+  const identity = await resolveRequestIdentity(request, analysisRepository);
+  if (!identity.ok) {
+    return jsonResponse({ error: { code: identity.error.code, message: identity.error.message, retryable: false } }, { status: 401 });
+  }
+
+  const ownerId = identity.value.ownerId;
+  const repositoryDiagram = await analysisRepository.getAnalysisDiagram(diagramId, ownerId);
+  const diagram = repositoryDiagram ?? analysisStore.getDiagram(diagramId);
   if (!diagram) return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+
+  const job = await analysisRepository.getJobByAnalysisId(diagram.analysisId);
+  if (job && job.ownerId !== ownerId) {
+    return jsonResponse({ error: { code: "DIAGRAM_NOT_FOUND", message: "Diagram not found.", retryable: false } }, { status: 404 });
+  }
+
   try {
     const patch = patchSchema.parse(await readJsonBody(request, 8 * 1024 * 1024));
     const nodeIds = new Set(diagram.nodes.map((node) => node.id));
@@ -46,7 +73,7 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Ne
     if ((patch.nodeUpdates ?? []).some((update) => !nodeIds.has(update.nodeId))) throw new Error("UNKNOWN_NODE_ID");
     if ((patch.edgeUpdates ?? []).some((update) => !edgeIds.has(update.edgeId))) throw new Error("UNKNOWN_EDGE_ID");
     const updated = redactPathValues(applyDiagramPatch(diagram, patch));
-    if (await analysisRepository.getJobByAnalysisId(updated.analysisId, ownerId)) await analysisRepository.saveAnalysisDiagram(updated, ownerId);
+    if (job) await analysisRepository.saveAnalysisDiagram(updated, ownerId);
     else analysisStore.saveDiagram(updated);
     return jsonResponse({ diagram: updated });
   } catch (error) {

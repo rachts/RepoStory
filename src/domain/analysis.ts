@@ -14,10 +14,17 @@ export type AnalysisResultStatus =
 export type AnalysisResultStage =
   | "validating"
   | "fetching-metadata"
+  | "fetch-metadata"
+  | "fetching-tree"
+  | "fetch-tree"
   | "fetching-files"
+  | "fetching-content"
+  | "fetch-archive"
   | "filtering-files"
   | "analyzing"
+  | "analyze"
   | "generating-diagrams"
+  | "generate-diagrams"
   | "completed";
 
 export type AnalysisJobStatus =
@@ -33,9 +40,15 @@ export type AnalysisJobStatus =
 export type AnalysisJobStage =
   | "validating-input"
   | "fetching-metadata"
+  | "fetch-metadata"
   | "fetching-tree"
+  | "fetch-tree"
   | "fetching-content"
+  | "fetch-archive"
   | "analyzing-repository"
+  | "analyze"
+  | "generating-diagrams"
+  | "generate-diagrams"
   | "generating-explanation"
   | "storing-result"
   | "completed";
@@ -49,9 +62,23 @@ export interface AnalysisCoverage {
     tooLarge: number;
     unsupported: number;
     limitReached: number;
+    lfsPointer?: number;
+    submodule?: number;
+    unsupportedEncoding?: number;
+    pathCollision?: number;
   };
+  filesSkippedDetails?: Array<{
+    path: string;
+    reason: "lfs-pointer" | "submodule" | "unsupported-encoding" | "path-collision" | "too-large" | "unsupported" | "limit-reached";
+    details?: string;
+  }>;
+  skippedFiles?: Array<{ path: string; reason: string }>;
+  warnings?: string[];
+  analyzedPercent?: number;
   treeTruncated: boolean;
   analysisConfidence: AnalysisConfidence;
+  usedFallbackContentFetch?: boolean;
+  contentFetchStrategy?: "archive" | "per-file";
 }
 
 export interface AnalysisJobProgress {
@@ -87,6 +114,9 @@ export interface AnalysisJobRecord {
   cancellationRequested?: boolean;
   error?: AnalysisJobError;
   coverage?: AnalysisCoverage;
+  orgId?: string;
+  commitSha?: string;
+  blobShas?: Record<string, string>;
 }
 
 /**
@@ -116,6 +146,9 @@ export interface AnalysisResult {
   completedAt?: string;
   diagrams?: import("@/domain/diagram").Diagram[];
   coverage?: AnalysisCoverage;
+  orgId?: string;
+  commitSha?: string;
+  blobShas?: Record<string, string>;
   explanation?: ProjectExplanation;
   explanationUnavailable?: { code: string; message: string };
 }

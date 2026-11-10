@@ -23,15 +23,32 @@ export const serverConfig = {
   groqEnabled: booleanValue(process.env.GROQ_ENABLED, true),
   jobStoreMode: process.env.NODE_ENV === "test"
     ? "memory"
-    : process.env.REPO_STORY_JOB_STORE === "memory"
+    : process.env.REPO_STORY_JOB_STORE === "file"
+      ? "file"
+      : process.env.REPO_STORY_JOB_STORE === "memory"
+        ? "memory"
+        : process.env.REPO_STORY_JOB_STORE === "supabase"
+          ? "supabase"
+          : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
+  cacheStoreMode: process.env.NODE_ENV === "test"
+    ? "memory"
+    : process.env.REPO_STORY_CACHE_STORE === "memory"
       ? "memory"
-      : process.env.REPO_STORY_JOB_STORE === "supabase" || Boolean(process.env.SUPABASE_SECRET_KEY?.trim() && (process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim()))
+      : process.env.REPO_STORY_CACHE_STORE === "supabase"
         ? "supabase"
-        : "file",
+        : (process.env.NODE_ENV === "production" ? "supabase" : "memory"),
+  queueMode: process.env.NODE_ENV === "test"
+    ? "memory"
+    : process.env.REPO_STORY_QUEUE_MODE === "memory"
+      ? "memory"
+      : process.env.REPO_STORY_QUEUE_MODE === "supabase"
+        ? "supabase"
+        : (process.env.NODE_ENV === "production" && process.env.ALLOW_IN_MEMORY_QUEUE !== "true" ? "supabase" : "memory"),
   jobStorePath: process.env.REPO_STORY_JOB_STORE_PATH?.trim() || ".repo-story-data/state.json",
   maxConcurrentJobs: positiveInteger(process.env.REPO_STORY_MAX_CONCURRENT_JOBS, 2),
   maxJobRetries: positiveInteger(process.env.REPO_STORY_MAX_JOB_RETRIES, 2),
   jobRetryBackoffMs: positiveInteger(process.env.REPO_STORY_JOB_RETRY_BACKOFF_MS, 250),
+  maxAnalysisMs: positiveInteger(process.env.REPO_STORY_MAX_ANALYSIS_MS, DEFAULT_LIMITS.maxAnalysisMs),
   jobTtlMs: positiveInteger(process.env.REPO_STORY_JOB_TTL_MS, DEFAULT_LIMITS.maxAnalysisMs * 20),
   analyzerVersion: process.env.REPO_STORY_ANALYZER_VERSION?.trim() || "phase-async-1",
   configVersion: process.env.REPO_STORY_CONFIG_VERSION?.trim() || "1",

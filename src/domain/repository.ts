@@ -8,6 +8,7 @@ export interface Repository {
   description?: string;
   sizeBytes: number;
   fileCount: number;
+  commitSha?: string;
 }
 
 export interface RepositoryFile {
@@ -30,8 +31,15 @@ export interface RepositoryReference {
 export interface RepositorySnapshot {
   repository: Repository;
   files: RepositoryFile[];
+  coverage?: Partial<import("@/domain/analysis").AnalysisCoverage>;
 }
 
 export interface RepositoryProvider {
-  getSnapshot(reference: RepositoryReference, signal?: AbortSignal, budget?: import("@/shared/limits").AnalysisBudget): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
+  readonly cacheStore?: import("@/application/cache/cache-store").CacheStore;
+  getSnapshot(
+    reference: RepositoryReference,
+    signal?: AbortSignal,
+    budget?: import("@/shared/limits").AnalysisBudget,
+    onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
+  ): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
 }
