@@ -3,7 +3,7 @@ import { POST as analyzePost } from "@/app/api/analyze/route";
 import { GET as jobGet } from "@/app/api/analyze/jobs/[jobId]/route";
 import { POST as exportPost } from "@/app/api/exports/route";
 import { GET as healthGet } from "@/app/api/health/route";
-import { analysisJobRunner } from "@/composition/container";
+import { analysisJobRunner, analysisRepository } from "@/composition/container";
 import { redactPath, redactPathValues, redactSecrets } from "@/shared/redaction";
 import { evidenceFor } from "@/analysis/evidence";
 import { filterFiles } from "@/analysis/filter-files";
@@ -126,6 +126,38 @@ describe("security and API boundaries", () => {
     const otherSession = await jobGet(new Request("http://localhost/api/analyze/jobs", { headers: { "x-repo-story-session": "test-session-route-002" } }), { params: Promise.resolve({ jobId: payload.jobId }) });
     expect(otherSession.status).toBe(404);
     enqueue.mockRestore();
+  });
+
+  it("marks stale jobs older than 5 minutes stuck in validating-input/queued as failed", async () => {
+    const staleTime = new Date(Date.now() - 6 * 60 * 1000).toISOString();
+    await analysisRepository.createJob({
+      jobId: "job-stale-001",
+      analysisId: null,
+      repositoryUrl: "https://github.com/octocat/Hello-World",
+      branch: "main",
+      ownerId: "test-session-route-001",
+      cacheKey: "cache-stale-001",
+      status: "queued",
+      stage: "validating-input",
+      progress: 0,
+      message: "Analysis queued.",
+      createdAt: staleTime,
+      updatedAt: staleTime,
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      retryCount: 0,
+      explanationRequested: false,
+    });
+
+    const response = await jobGet(
+      new Request("http://localhost/api/analyze/jobs", { headers: { "x-repo-story-session": "test-session-route-001" } }),
+      { params: Promise.resolve({ jobId: "job-stale-001" }) },
+    );
+    expect(response.status).toBe(200);
+    const body = await response.json() as { status: string; stage: string; error?: { code: string; message: string } };
+    expect(body.status).toBe("failed");
+    expect(body.stage).toBe("completed");
+    expect(body.error?.code).toBe("VALIDATION_TIMEOUT");
+    expect(body.error?.message).toBe("Job timed out during validation. The worker may be offline or crashed.");
   });
 
   it("escapes Mermaid labels and keeps the requested direction", () => {

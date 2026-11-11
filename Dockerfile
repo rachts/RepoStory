@@ -9,12 +9,22 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-FROM node:22.14.0-alpine AS builder
+# Dedicated builder for background worker (compiles worker TypeScript without frontend Next.js/Turbopack build)
+FROM node:22.14.0-alpine AS worker-builder
+WORKDIR /app
+COPY --from=dependencies /app/node_modules ./node_modules
+COPY . .
+RUN npm run build:worker
+
+# Dedicated builder for web frontend (Next.js production build)
+FROM node:22.14.0-alpine AS web-builder
 WORKDIR /app
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
-RUN npm run build:worker
+
+# Backwards compatibility alias
+FROM web-builder AS builder
 
 # Base runner image with non-root nextjs user
 FROM node:22.14.0-alpine AS runner-base
@@ -32,9 +42,9 @@ FROM runner-base AS web
 ENV HOSTNAME=0.0.0.0
 ENV PORT=3000
 
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=web-builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=web-builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=web-builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
 USER nextjs
 EXPOSE 3000
@@ -46,8 +56,8 @@ CMD ["node", "server.js"]
 # Target 2: worker (Background job runner without tsx or devDependencies)
 FROM runner-base AS worker
 COPY --from=prod-dependencies --chown=nextjs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
-COPY --from=builder --chown=nextjs:nodejs /app/dist ./dist
+COPY --from=worker-builder --chown=nextjs:nodejs /app/package.json ./package.json
+COPY --from=worker-builder --chown=nextjs:nodejs /app/dist ./dist
 
 USER nextjs
 CMD ["node", "dist/worker.js"]
