@@ -118,7 +118,9 @@ export async function POST(request: Request): Promise<NextResponse> {
     const job = created.job;
     if (created.created) {
       await jobQueue.enqueue(job.jobId);
-      analysisJobRunner.enqueue(job.jobId);
+      if (serverConfig.queueMode === "memory") {
+        analysisJobRunner.enqueue(job.jobId);
+      }
     }
     const response = jsonResponse({
       jobId: job.jobId,
