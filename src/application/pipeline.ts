@@ -170,6 +170,10 @@ export async function runAnalysis(
       job = {
         ...cached,
         id,
+        diagrams: (cached.diagrams ?? []).map((diagram) => ({
+          ...diagram,
+          analysisId: id,
+        })),
         createdAt: started,
         completedAt: nowIso(),
       };
@@ -212,6 +216,10 @@ export async function runAnalysis(
           job = {
             ...cached,
             id,
+            diagrams: (cached.diagrams ?? []).map((diagram) => ({
+              ...diagram,
+              analysisId: id,
+            })),
             repository: snapshot.value.repository,
             createdAt: started,
             completedAt: nowIso(),
