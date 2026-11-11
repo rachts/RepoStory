@@ -1,3 +1,7 @@
+import { loadEnvConfig } from "@next/env";
+// Load .env and .env.local if running outside Next.js
+loadEnvConfig(process.cwd());
+
 import http from "node:http";
 
 // Register module alias resolution before importing @/... modules
