@@ -11,6 +11,7 @@ export interface JobWorkerOptions {
   concurrency?: number; // default: 1
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
+  processJob?: (item: JobQueueItem) => Promise<void>;
 }
 
 export class JobWorker {
@@ -22,6 +23,7 @@ export class JobWorker {
   private readonly pollIntervalMs: number;
   private readonly concurrency: number;
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly processJobHandler?: (item: JobQueueItem) => Promise<void>;
   private isRunning = false;
   private activeJobs = new Set<string>();
   private loopPromise?: Promise<void>;
@@ -40,6 +42,7 @@ export class JobWorker {
     this.pollIntervalMs = options.pollIntervalMs ?? 1_000;
     this.concurrency = options.concurrency ?? 1;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.processJobHandler = options.processJob;
   }
 
   public get activeCount(): number {
@@ -69,7 +72,7 @@ export class JobWorker {
     if (!claimed) return undefined;
 
     this.activeJobs.add(claimed.jobId);
-    void this.processClaimed(claimed).finally(() => {
+    void this.processJob(claimed).finally(() => {
       this.activeJobs.delete(claimed.jobId);
     });
     return claimed;
@@ -82,7 +85,7 @@ export class JobWorker {
           const item = await this.queue.claim(this.workerId);
           if (item) {
             this.activeJobs.add(item.jobId);
-            void this.processClaimed(item).finally(() => {
+            void this.processJob(item).finally(() => {
               this.activeJobs.delete(item.jobId);
             });
             continue;
@@ -95,7 +98,13 @@ export class JobWorker {
     }
   }
 
-  private async processClaimed(item: JobQueueItem): Promise<void> {
+  /**
+   * Process a claimed queue job with comprehensive error handling.
+   * Guarantees errors during validation or execution are caught, logged
+   * with full stack traces, reported to the job repository, and the worker
+   * continues polling.
+   */
+  public async processJob(item: JobQueueItem): Promise<void> {
     logger.info({
       event: "claimed",
       jobId: item.jobId,
@@ -106,31 +115,72 @@ export class JobWorker {
     let heartbeatActive = true;
     const heartbeatTimer = setInterval(() => {
       if (!heartbeatActive) return;
-      void this.queue.heartbeat(item.jobId, this.workerId).catch(() => {});
+      void this.queue.heartbeat(item.jobId, this.workerId).catch((err) => {
+        console.error(`[Worker ${this.workerId}] Heartbeat ping failed for job ${item.jobId}:`, err);
+      });
     }, this.heartbeatIntervalMs);
 
     try {
-      await this.runner.runNow(item.jobId);
-      const finalJob = await this.repository.getJob(item.jobId);
-      if (finalJob?.status === "completed") {
-        await this.queue.complete(item.jobId, this.workerId);
-      } else if (finalJob?.status === "cancelled") {
-        await this.queue.cancel(item.jobId);
-      } else if (finalJob?.status === "failed") {
-        const error = finalJob.error ?? {
-          code: "ANALYSIS_FAILED",
-          message: finalJob.message || "Analysis failed.",
-          retryable: false,
-        };
-        await this.queue.fail(item.jobId, this.workerId, error);
+      if (this.processJobHandler) {
+        await this.processJobHandler(item);
       } else {
-        await this.queue.complete(item.jobId, this.workerId);
+        console.log(`[Worker] Starting validation for job ${item.jobId}`);
+        await this.runner.runNow(item.jobId);
+        console.log(`[Worker] Validation complete for job ${item.jobId}`);
+
+        const finalJob = await this.repository.getJob(item.jobId);
+        if (finalJob?.status === "completed") {
+          await this.queue.complete(item.jobId, this.workerId);
+        } else if (finalJob?.status === "cancelled") {
+          await this.queue.cancel(item.jobId);
+        } else if (finalJob?.status === "failed") {
+          const error = finalJob.error ?? {
+            code: "ANALYSIS_FAILED",
+            message: finalJob.message || "Analysis failed.",
+            retryable: false,
+          };
+          await this.queue.fail(item.jobId, this.workerId, error);
+        } else {
+          await this.queue.complete(item.jobId, this.workerId);
+        }
       }
     } catch (error) {
-      const errObj = error instanceof Error
-        ? { code: "UNEXPECTED_ERROR", message: error.message, retryable: true }
-        : { code: "UNEXPECTED_ERROR", message: "Unexpected worker execution failure", retryable: true };
-      await this.queue.fail(item.jobId, this.workerId, errObj);
+      console.error(`[Worker ${this.workerId}] Fatal error processing job ${item.jobId}:`, error);
+      if (error instanceof Error && error.stack) {
+        console.error(`[Worker ${this.workerId}] Error stack trace:\n${error.stack}`);
+      }
+
+      const rawMessage = error instanceof Error ? error.message : String(error);
+      const crashMessage = `Worker crashed during validation: ${rawMessage}`;
+
+      try {
+        await this.repository.updateJob(item.jobId, {
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: crashMessage,
+          error: {
+            code: "WORKER_CRASHED",
+            message: crashMessage,
+            retryable: false,
+            details: error instanceof Error ? { name: error.name, ...(error.stack ? { stack: error.stack } : {}) } : undefined,
+          },
+          updatedAt: new Date().toISOString(),
+        });
+        console.log(`[Worker ${this.workerId}] Updated job ${item.jobId} to failed in repository: "${crashMessage}"`);
+      } catch (repoErr) {
+        console.error(`[Worker ${this.workerId}] Failed to update job ${item.jobId} status in repository:`, repoErr);
+      }
+
+      try {
+        await this.queue.fail(item.jobId, this.workerId, {
+          code: "WORKER_CRASHED",
+          message: crashMessage,
+          retryable: false,
+        });
+      } catch (queueErr) {
+        console.error(`[Worker ${this.workerId}] Failed to mark queue item ${item.jobId} as failed:`, queueErr);
+      }
     } finally {
       heartbeatActive = false;
       clearInterval(heartbeatTimer);

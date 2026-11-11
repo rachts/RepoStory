@@ -138,8 +138,12 @@ export class AnalysisJobRunner {
   }
 
   private async execute(jobId: string): Promise<void> {
+    console.log(`[Worker] Starting validation for job ${jobId}`);
     const initial = await this.repository.getJob(jobId);
-    if (!initial || initial.status === "cancelled" || initial.status === "expired") return;
+    if (!initial || initial.status === "cancelled" || initial.status === "expired") {
+      console.log(`[Worker] Job ${jobId} not found, cancelled, or expired during validation.`);
+      return;
+    }
     const controller = new AbortController();
     this.controllers.set(jobId, controller);
     let retryCount = initial.retryCount;
@@ -148,6 +152,7 @@ export class AnalysisJobRunner {
       const current = await this.repository.getJob(jobId);
       if (!current || current.status === "cancelled" || current.cancellationRequested) return;
       const analysisId = current.analysisId ?? opaqueId("analysis");
+      console.log(`[Worker] Validation complete for job ${jobId}`);
       await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", updatedAt: nowIso() });
       if (process.env.REPO_STORY_TEST_JOB_DELAY_MS) {
         const delay = Number(process.env.REPO_STORY_TEST_JOB_DELAY_MS);

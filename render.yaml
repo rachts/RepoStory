@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: repostory-web
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+  - type: web
+    name: repostory-worker
+    runtime: node
+    plan: free
+    buildCommand: npm install && npm run build:worker
+    startCommand: npm run worker
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { InMemoryJobQueue } from "@/infrastructure/jobs/in-memory-job-queue";
 import { InMemoryAnalysisStore } from "@/application/store";
 import { JobWorker } from "@/application/jobs/job-worker";
@@ -207,5 +207,37 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
 
     const queueItem = await queue.get("job-worker-1");
     expect(queueItem?.status).toBe("succeeded");
+  });
+
+  it("JobWorker catches fatal runner errors, updates repository to failed, and continues polling", async () => {
+    const store = new InMemoryAnalysisStore({ maxAnalyses: 5, ttlMs: 60_000 });
+    const queue = new InMemoryJobQueue();
+    const failingRunner = {
+      runNow: vi.fn().mockRejectedValue(new Error("Database connection severed")),
+      waitForIdle: vi.fn().mockResolvedValue(undefined),
+    } as unknown as AnalysisJobRunner;
+
+    const worker = new JobWorker(queue, store, failingRunner, {
+      workerId: "crash-test-worker",
+      heartbeatIntervalMs: 50,
+      pollIntervalMs: 20,
+    });
+
+    await store.createJob(createFixtureJob("job-crash-1"));
+    await queue.enqueue("job-crash-1");
+
+    const processed = await worker.tick();
+    expect(processed?.jobId).toBe("job-crash-1");
+
+    // Wait a brief tick for async processJob to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const failedJob = await store.getJob("job-crash-1", "session-1");
+    expect(failedJob?.status).toBe("failed");
+    expect(failedJob?.message).toContain("Worker crashed during validation: Database connection severed");
+    expect(failedJob?.error?.code).toBe("WORKER_CRASHED");
+
+    const queueItem = await queue.get("job-crash-1");
+    expect(queueItem?.status).toBe("failed");
   });
 });
