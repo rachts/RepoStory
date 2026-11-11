@@ -188,11 +188,15 @@ export class AnalysisJobRunner {
         return;
       }
 
-      const analysisResult: AnalysisResult = result.value;
+      const analysisResult: AnalysisResult = {
+        ...result.value,
+        id: analysisId,
+        diagrams: (result.value.diagrams ?? scratchStore.listDiagrams(analysisId)).map((d) => ({ ...d, analysisId })),
+      };
       await this.repository.updateJob(jobId, { analysisId, status: "analyzing", stage: "storing-result", progress: 92, message: "Saving the deterministic analysis result.", coverage: analysisResult.coverage, updatedAt: nowIso() });
       const persisted = await this.repository.saveAnalysisResult(analysisResult, current.ownerId);
       if (!persisted) return;
-      for (const diagram of analysisResult.diagrams ?? scratchStore.listDiagrams(analysisId)) await this.repository.saveAnalysisDiagram(diagram, current.ownerId);
+      for (const diagram of analysisResult.diagrams ?? []) await this.repository.saveAnalysisDiagram(diagram, current.ownerId);
 
       if (current.explanationRequested) await this.generateExplanation(jobId, current.ownerId, analysisResult);
       const finalJob = await this.repository.getJob(jobId, current.ownerId);
