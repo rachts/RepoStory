@@ -237,7 +237,7 @@ export async function extractRepositoryArchive(
           processedPaths.add(relativePath);
 
           if (cacheStore && cacheKeyPrefix) {
-            await cacheStore.set(`${cacheKeyPrefix}${relativePath}`, content, 3_600_000);
+            void cacheStore.set(`${cacheKeyPrefix}${relativePath}`, content, 3_600_000).catch(() => {});
           }
 
           next();
