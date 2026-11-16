@@ -95,6 +95,9 @@ export async function processJob(item: JobQueueItem): Promise<void> {
         message: failureMessage,
         error: {
           code: "WORKER_CRASHED",
+          stage: "analyze",
+          reason: failureMessage,
+          hint: "Check worker logs for unhandled exception or crash details.",
           message: failureMessage,
           retryable: false,
           details: error instanceof Error ? { name: error.name, ...(error.stack ? { stack: error.stack } : {}) } : undefined,
@@ -109,6 +112,9 @@ export async function processJob(item: JobQueueItem): Promise<void> {
     try {
       await jobQueue.fail(item.jobId, workerId, {
         code: "WORKER_CRASHED",
+        stage: "analyze",
+        reason: failureMessage,
+        hint: "Check worker logs for unhandled exception or crash details.",
         message: failureMessage,
         retryable: false,
       });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
+import { jobTokenRegistry } from "@/application/jobs/analysis-job-runner";
 import {
   resolveRequestIdentity,
   checkDailyQuota,
@@ -19,8 +20,23 @@ const MAX_REQUEST_BYTES = 8 * 1024;
 const requestSchema = z.object({
   repositoryUrl: z.string().trim().min(1).max(500),
   branch: z.string().trim().min(1).max(255).optional(),
+  githubToken: z.string().trim().min(1).max(500).optional(),
+  token: z.string().trim().min(1).max(500).optional(),
   explanationRequested: z.boolean().optional().default(false),
 }).strict();
+
+export const ANALYSIS_ROUTE_MAX_DURATION_SECONDS = 60;
+export const maxDuration = ANALYSIS_ROUTE_MAX_DURATION_SECONDS;
+
+export function shouldRunInProcessJobs(): boolean {
+  if (process.env.IN_PROCESS_JOBS !== undefined) {
+    return process.env.IN_PROCESS_JOBS.toLowerCase() === "true";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+  return serverConfig.queueMode === "memory";
+}
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
@@ -116,10 +132,15 @@ export async function POST(request: Request): Promise<NextResponse> {
       explanationRequested: input.explanationRequested,
     });
     const job = created.job;
+    const effectiveToken = input.githubToken || input.token || identityResult.value.accessToken;
+    if (effectiveToken) {
+      jobTokenRegistry.set(job.jobId, { token: effectiveToken, expiresAt: Date.now() + 15 * 60 * 1000 });
+    }
+
     if (created.created) {
       await jobQueue.enqueue(job.jobId);
-      if (serverConfig.queueMode === "memory") {
-        analysisJobRunner.enqueue(job.jobId);
+      if (shouldRunInProcessJobs()) {
+        analysisJobRunner.enqueue(job.jobId, effectiveToken ? { token: effectiveToken } : undefined);
       }
     }
     const response = jsonResponse({

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { analysisRepository } from "@/composition/container";
 import { resolveRequestIdentity } from "@/application/jobs/job-identity";
-import { jsonResponse } from "@/shared/http";
+import { jsonResponse, inferErrorStage, inferErrorHint } from "@/shared/http";
 import { redactPathValues } from "@/shared/redaction";
 
 interface RouteContext { params: Promise<{ jobId: string }> }
@@ -79,7 +79,17 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
     retryCount: effectiveJob.retryCount,
     explanationRequested: effectiveJob.explanationRequested,
     cancellationRequested: effectiveJob.cancellationRequested ?? false,
-    error: effectiveJob.error,
+    error: effectiveJob.error
+      ? {
+          code: effectiveJob.error.code,
+          stage: effectiveJob.error.stage ?? inferErrorStage(effectiveJob.error.code),
+          reason: effectiveJob.error.reason ?? effectiveJob.error.message,
+          message: effectiveJob.error.message,
+          retryable: effectiveJob.error.retryable,
+          hint: effectiveJob.error.hint ?? inferErrorHint(effectiveJob.error.code),
+          details: effectiveJob.error.details,
+        }
+      : undefined,
     coverage: effectiveJob.coverage,
     statusUrl: `/api/analyze/jobs/${encodeURIComponent(effectiveJob.jobId)}`,
     resultUrl: effectiveJob.analysisId ? `/api/analyze/${encodeURIComponent(effectiveJob.analysisId)}` : null,

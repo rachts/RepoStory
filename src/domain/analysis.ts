@@ -3,6 +3,7 @@ import type { DiagramType } from "@/domain/diagram";
 import type { Repository } from "@/domain/repository";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { ProjectExplanation } from "@/domain/ai-explanation";
+import type { AnalysisErrorStage } from "@/domain/errors";
 
 export type AnalysisResultStatus =
   | "pending"
@@ -66,13 +67,15 @@ export interface AnalysisCoverage {
     submodule?: number;
     unsupportedEncoding?: number;
     pathCollision?: number;
+    parseFailure?: number;
   };
   filesSkippedDetails?: Array<{
     path: string;
-    reason: "lfs-pointer" | "submodule" | "unsupported-encoding" | "path-collision" | "too-large" | "unsupported" | "limit-reached";
+    reason: "lfs-pointer" | "submodule" | "unsupported-encoding" | "path-collision" | "too-large" | "unsupported" | "limit-reached" | "parse-failure";
     details?: string;
   }>;
   skippedFiles?: Array<{ path: string; reason: string }>;
+  unresolvedSubtrees?: string[];
   warnings?: string[];
   analyzedPercent?: number;
   treeTruncated: boolean;
@@ -89,9 +92,12 @@ export interface AnalysisJobProgress {
 
 export interface AnalysisJobError {
   code: string;
+  stage?: AnalysisErrorStage;
+  reason?: string;
   message: string;
   retryable: boolean;
-  details?: Record<string, string | number | boolean>;
+  hint?: string;
+  details?: Record<string, unknown>;
 }
 
 export interface AnalysisJobRecord {
@@ -168,9 +174,11 @@ export interface AnalysisError {
     | "INVALID_URL"
     | "UNSUPPORTED_HOST"
     | "REPOSITORY_NOT_FOUND"
+    | "REPOSITORY_NOT_FOUND_OR_PRIVATE"
     | "REPOSITORY_INACCESSIBLE"
     | "GITHUB_AUTH_FAILED"
     | "REPOSITORY_TOO_LARGE"
+    | "REPO_TOO_LARGE"
     | "FILE_LIMIT_EXCEEDED"
     | "GITHUB_RATE_LIMITED"
     | "GITHUB_TREE_TRUNCATED"
@@ -186,8 +194,11 @@ export interface AnalysisError {
     | "ANALYSIS_STORAGE_UNAVAILABLE"
     | "ANALYSIS_FAILED"
     | "CANCELLED";
+  stage?: AnalysisErrorStage;
+  reason?: string;
+  hint?: string;
   message: string;
-  details?: Record<string, string | number | boolean>;
+  details?: Record<string, unknown>;
   retryable: boolean;
 }
 
