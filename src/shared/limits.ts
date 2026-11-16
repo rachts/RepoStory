@@ -7,9 +7,10 @@ export const DEFAULT_LIMITS = {
   maxPathLength: 4_096,
   maxEvidenceExcerpt: 1_000,
   maxTreeEntries: 10_000,
+  maxPreflightFiles: 10_000,
   maxImportCandidates: 256,
   maxConcurrentContentRequests: 10,
-  maxAnalysisMs: 120_000,
+  maxAnalysisMs: 50_000,
 } as const;
 export const DEFAULT_STORE_LIMITS = {
   maxAnalyses: 100,
@@ -25,6 +26,7 @@ export type AnalysisLimits = {
   maxEvidenceExcerpt: number;
   maxTreeEntries?: number;
   maxTreeEntriesCeiling?: number;
+  maxPreflightFiles?: number;
   maxImportCandidates?: number;
   maxConcurrentContentRequests?: number;
   maxConcurrentGitHubContentRequests?: number;

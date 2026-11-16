@@ -2,6 +2,9 @@ export type JobQueueStatus = "queued" | "running" | "succeeded" | "failed" | "ca
 
 export interface JobQueueError {
   code: string;
+  stage?: string;
+  reason?: string;
+  hint?: string;
   message: string;
   retryable: boolean;
   details?: Record<string, unknown>;

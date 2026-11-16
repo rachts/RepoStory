@@ -350,7 +350,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     });
   }
 
-  private async dispatch(initialUrl: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget): Promise<Response> {
+  private async dispatch(initialUrl: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget, tokenOverride?: string): Promise<Response> {
     const maxAttempts = 3;
     let attempt = 0;
     let currentUrl = initialUrl;
@@ -382,7 +382,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         });
       }
 
-      const token = this.tokenPool.getBestToken();
+      const token = this.tokenPool.getBestToken(tokenOverride);
       const headers: Record<string, string> = {
         accept: stage === "archive" ? "application/x-gzip, application/octet-stream, */*" : "application/vnd.github+json",
       };
@@ -572,7 +572,9 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     signal?: AbortSignal,
     budget?: AnalysisBudget,
     onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
+    options?: { token?: string },
   ): Promise<Result<RepositorySnapshot, AppError>> {
+    const tokenOverride = options?.token;
     const fetchOptions: RequestInit = { signal, cache: "no-store" };
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
@@ -588,14 +590,37 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       pathCollision: 0,
     };
     const warnings: string[] = [];
+    const unresolvedSubtrees: string[] = [];
 
     try {
       budget?.check();
       onProgress?.({ stage: "fetch-metadata", progress: 10, message: "Reading repository metadata" });
       const metaUrl = buildSafeGitHubApiUrl(reference.owner, reference.name);
-      const metaResponse = await this.dispatch(metaUrl, fetchOptions, "metadata", budget);
+      const metaResponse = await this.dispatch(metaUrl, fetchOptions, "metadata", budget, tokenOverride);
       if (!metaResponse.ok) {
-        if (metaResponse.status === 404) return err(new AppError({ code: "REPOSITORY_NOT_FOUND", message: "GitHub repository not found." }));
+        if (metaResponse.status === 404) {
+          const effectiveToken = this.tokenPool.getBestToken(tokenOverride);
+          if (!effectiveToken) {
+            return err(new AppError({
+              code: "REPOSITORY_NOT_FOUND_OR_PRIVATE",
+              stage: "fetch",
+              message: "Repository not found or private. Make the repository public or sign in with a GitHub token that has repo scope.",
+              reason: "Repository not found or requires authentication with repo scope.",
+              hint: "Make the repository public or sign in with a GitHub token that has repo scope.",
+              retryable: false,
+              details: { stage: "fetch", repository: `${reference.owner}/${reference.name}` },
+            }));
+          }
+          return err(new AppError({
+            code: "REPOSITORY_NOT_FOUND",
+            stage: "fetch",
+            message: "GitHub repository not found.",
+            reason: "GitHub repository not found.",
+            hint: "Verify the repository URL and branch name.",
+            retryable: false,
+            details: { stage: "fetch", repository: `${reference.owner}/${reference.name}` },
+          }));
+        }
         return err(responseFailure(metaResponse, "metadata"));
       }
 
@@ -617,7 +642,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         budget?.check();
         onProgress?.({ stage: "fetch-tree", progress: 25, message: "Reading repository file tree" });
         const treeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`, { recursive: "1" });
-        const treeResponse = await this.dispatch(treeUrl, fetchOptions, "tree", budget);
+        const treeResponse = await this.dispatch(treeUrl, fetchOptions, "tree", budget, tokenOverride);
         if (!treeResponse.ok) return err(responseFailure(treeResponse, "tree"));
 
         const treeResult = await readJsonResponse<Record<string, unknown>>(treeResponse, "tree", responseLimit, budget);
@@ -634,7 +659,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           warnings.push("GitHub repository tree was truncated. Attempting top-level subtree resolution.");
           try {
             const rootTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`);
-            const rootTreeResponse = await this.dispatch(rootTreeUrl, fetchOptions, "root-tree", budget);
+            const rootTreeResponse = await this.dispatch(rootTreeUrl, fetchOptions, "root-tree", budget, tokenOverride);
             if (rootTreeResponse.ok) {
               const rootTreeResult = await readJsonResponse<Record<string, unknown>>(rootTreeResponse, "root-tree", responseLimit, budget);
               if (rootTreeResult.ok && isRecord(rootTreeResult.value) && Array.isArray(rootTreeResult.value.tree)) {
@@ -650,7 +675,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
                     try {
                       budget?.check();
                       const subTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(item.sha)}`, { recursive: "1" });
-                      const subResponse = await this.dispatch(subTreeUrl, fetchOptions, "subtree", budget);
+                      const subResponse = await this.dispatch(subTreeUrl, fetchOptions, "subtree", budget, tokenOverride);
                       if (subResponse.ok) {
                         const subResult = await readJsonResponse<Record<string, unknown>>(subResponse, "subtree", responseLimit, budget);
                         if (subResult.ok && isRecord(subResult.value) && Array.isArray(subResult.value.tree)) {
@@ -664,12 +689,15 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
                           }
                         } else {
                           anySubtreeFailed = true;
+                          unresolvedSubtrees.push(item.path);
                         }
                       } else {
                         anySubtreeFailed = true;
+                        unresolvedSubtrees.push(item.path);
                       }
                     } catch {
                       anySubtreeFailed = true;
+                      unresolvedSubtrees.push(item.path);
                     }
                   }
                 }
@@ -685,13 +713,23 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
               }
             } else {
               warnings.push("Top-level tree request failed. Analyzing partial tree.");
+              unresolvedSubtrees.push("(root)");
             }
           } catch {
             warnings.push("Failed to fetch subtrees for truncated repository. Analyzing partial tree.");
+            if (!unresolvedSubtrees.includes("(root)")) unresolvedSubtrees.push("(root)");
           }
 
           if (rawTreeEntries.length === 0) {
-            return err(new AppError({ code: "GITHUB_TREE_TRUNCATED", message: "GitHub repository tree was truncated and cannot be analyzed safely." }));
+            return err(new AppError({
+              code: "GITHUB_TREE_TRUNCATED",
+              stage: "tree",
+              message: "GitHub repository tree was truncated and cannot be analyzed safely.",
+              reason: "Repository tree was truncated and subtrees could not be resolved.",
+              hint: "Analyze a specific branch or subpath.",
+              retryable: false,
+              details: { stage: "tree", unresolvedSubtrees },
+            }));
           }
         }
 
@@ -743,6 +781,28 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       }
 
       budget?.check();
+      const blobCount = treeEntries.filter((e) => e.type === "blob").length;
+      const preflightThreshold = this.limits.maxPreflightFiles ?? (process.env.REPO_STORY_MAX_PREFLIGHT_FILES ? Number(process.env.REPO_STORY_MAX_PREFLIGHT_FILES) : this.limits.maxTreeEntries ?? 10_000);
+      const largeRepoMode = (process.env.REPO_STORY_LARGE_REPO_MODE as "fail" | "sample") || "fail";
+
+      if (blobCount > preflightThreshold) {
+        if (largeRepoMode === "fail") {
+          return err(new AppError({
+            code: "REPO_TOO_LARGE",
+            stage: "tree",
+            message: `Repository contains ${blobCount} files, exceeding pre-flight limit of ${preflightThreshold}.`,
+            reason: `Repository contains ${blobCount} files, exceeding pre-flight limit of ${preflightThreshold}.`,
+            hint: "Analyze a smaller repository or set REPO_STORY_LARGE_REPO_MODE=sample for sampled analysis.",
+            retryable: false,
+            details: { blobCount, preflightThreshold, mode: "fail" },
+          }));
+        } else {
+          warnings.push(`Repository contains ${blobCount} files (limit ${preflightThreshold}); running in sampled analysis mode.`);
+          treeEntries = treeEntries.slice(0, preflightThreshold);
+        }
+      }
+
+      budget?.check();
       const { collisions, warnings: collisionWarnings, safePaths } = detectCaseCollisions(treeEntries.map((e) => e.path));
       for (const col of collisions) {
         coverageDetails.push({ path: col.path, reason: "path-collision" });
@@ -778,7 +838,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             reference.name,
             `tarball/${encodeURIComponent(commitSha)}`,
           );
-          const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget);
+          const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget, tokenOverride);
 
           if (archiveResponse.ok && archiveResponse.body) {
             const extracted = await extractRepositoryArchive({
@@ -865,7 +925,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             } else {
               budget?.check();
               const contentUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `contents/${encodeGitHubPath(item.path)}`, { ref: commitSha });
-              const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget);
+              const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget, tokenOverride);
               if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
 
               const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
@@ -938,6 +998,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         },
         filesSkippedDetails: coverageDetails,
         skippedFiles: coverageDetails.map((d) => ({ path: d.path, reason: d.reason })),
+        unresolvedSubtrees: unresolvedSubtrees.length > 0 ? unresolvedSubtrees : undefined,
         warnings,
         analyzedPercent,
         treeTruncated: isTruncated,

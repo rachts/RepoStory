@@ -6,6 +6,7 @@ interface TokenState {
 
 export class GitHubTokenPool {
   private readonly tokens: TokenState[];
+  private readonly overrideTokens = new Map<string, TokenState>();
   private warnedAnonymous = false;
 
   public constructor(tokens?: string[] | string) {
@@ -26,7 +27,26 @@ export class GitHubTokenPool {
     return this.tokens.length;
   }
 
-  public getBestToken(): string | undefined {
+  public getBestToken(preferredToken?: string): string | undefined {
+    if (preferredToken && typeof preferredToken === "string") {
+      const clean = preferredToken.trim();
+      if (clean) {
+        let override = this.overrideTokens.get(clean);
+        if (!override) {
+          override = { token: clean, remaining: 5000, resetAt: 0 };
+          this.overrideTokens.set(clean, override);
+        }
+        const now = Date.now();
+        if (override.remaining <= 0 && override.resetAt <= now) {
+          override.remaining = 5000;
+        }
+        if (override.remaining > 0) {
+          return override.token;
+        }
+        // If preferred token is exhausted, fall back to best server token below
+      }
+    }
+
     if (this.tokens.length === 0) {
       if (!this.warnedAnonymous) {
         console.warn("[GitHub Token Pool] No GITHUB_TOKENS or GITHUB_TOKEN configured. Falling back to anonymous access with strict rate limits.");
@@ -50,25 +70,37 @@ export class GitHubTokenPool {
 
   public updateRateLimit(
     token: string | undefined,
-    remainingHeader?: string | null,
-    resetHeader?: string | null,
+    remainingHeader?: string | number | null,
+    resetHeader?: string | number | null,
   ): void {
     if (!token) return;
-    const target = this.tokens.find((t) => t.token === token);
-    if (!target) return;
-
-    if (remainingHeader && /^\d+$/.test(remainingHeader)) {
-      target.remaining = Number(remainingHeader);
+    let target = this.tokens.find((t) => t.token === token) ?? this.overrideTokens.get(token);
+    if (!target) {
+      target = { token, remaining: 5000, resetAt: 0 };
+      this.overrideTokens.set(token, target);
     }
-    if (resetHeader && /^\d+$/.test(resetHeader)) {
-      target.resetAt = Number(resetHeader) * 1000;
+
+    if (remainingHeader !== undefined && remainingHeader !== null) {
+      const parsed = typeof remainingHeader === "number" ? remainingHeader : (/^\d+$/.test(remainingHeader) ? Number(remainingHeader) : undefined);
+      if (parsed !== undefined) {
+        target.remaining = parsed;
+      }
+    }
+    if (resetHeader !== undefined && resetHeader !== null) {
+      const parsed = typeof resetHeader === "number" ? resetHeader : (/^\d+$/.test(resetHeader) ? Number(resetHeader) : undefined);
+      if (parsed !== undefined) {
+        target.resetAt = parsed > 1e11 ? parsed : parsed * 1000;
+      }
     }
   }
 
   public markExhausted(token: string | undefined, resetAtEpochSeconds?: number): void {
     if (!token) return;
-    const target = this.tokens.find((t) => t.token === token);
-    if (!target) return;
+    let target = this.tokens.find((t) => t.token === token) ?? this.overrideTokens.get(token);
+    if (!target) {
+      target = { token, remaining: 5000, resetAt: 0 };
+      this.overrideTokens.set(token, target);
+    }
     target.remaining = 0;
     target.resetAt = resetAtEpochSeconds ? resetAtEpochSeconds * 1000 : Date.now() + 60_000;
   }

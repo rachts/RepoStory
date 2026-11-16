@@ -10,6 +10,8 @@ import { nowIso, opaqueId } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { DEFAULT_LIMITS } from "@/shared/limits";
 
+export const jobTokenRegistry = new Map<string, { token: string; expiresAt: number }>();
+
 export interface AnalysisJobRunnerOptions {
   maxConcurrentJobs?: number;
   maxRetries?: number;
@@ -22,10 +24,24 @@ function safeError(error: unknown): AppError {
   if (error instanceof AppError) return error;
   if (error instanceof Error) {
     console.error("[RepoStory] unexpected analysis error", error);
-    return new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true });
+    return new AppError({
+      code: "ANALYSIS_FAILED",
+      stage: "analyze",
+      message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.",
+      reason: `Unexpected analysis failure: ${error.message}`,
+      hint: "Check server logs or retry the request.",
+      retryable: true,
+    });
   }
   console.error("[RepoStory] unexpected analysis failure", error);
-  return new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true });
+  return new AppError({
+    code: "ANALYSIS_FAILED",
+    stage: "analyze",
+    message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.",
+    reason: "Unexpected analysis failure.",
+    hint: "Check server logs or retry the request.",
+    retryable: true,
+  });
 }
 
 function repositoryReference(job: AnalysisJobRecord): RepositoryReference {
@@ -76,13 +92,19 @@ export class AnalysisJobRunner {
     };
   }
 
-  public enqueue(jobId: string): void {
+  public enqueue(jobId: string, options?: { token?: string }): void {
+    if (options?.token) {
+      jobTokenRegistry.set(jobId, { token: options.token, expiresAt: Date.now() + 15 * 60 * 1000 });
+    }
     if (this.running.has(jobId) || this.queued.has(jobId)) return;
     this.queued.add(jobId);
     this.scheduleDrain();
   }
 
-  public async runNow(jobId: string): Promise<void> {
+  public async runNow(jobId: string, options?: { token?: string }): Promise<void> {
+    if (options?.token) {
+      jobTokenRegistry.set(jobId, { token: options.token, expiresAt: Date.now() + 15 * 60 * 1000 });
+    }
     if (this.running.has(jobId)) return;
     this.queued.delete(jobId);
     await this.runWithSlot(jobId);
@@ -94,7 +116,23 @@ export class AnalysisJobRunner {
     if (job.status === "completed" || job.status === "failed" || job.status === "expired" || job.status === "cancelled") return job;
     this.controllers.get(jobId)?.abort();
     this.queued.delete(jobId);
-    return this.repository.updateJob(jobId, { status: "cancelled", stage: "completed", progress: 100, message: "Cancellation requested.", cancellationRequested: true, updatedAt: nowIso(), error: { code: "CANCELLED", message: "The analysis was cancelled.", retryable: false } }, ownerId);
+    jobTokenRegistry.delete(jobId);
+    return this.repository.updateJob(jobId, {
+      status: "cancelled",
+      stage: "completed",
+      progress: 100,
+      message: "Cancellation requested.",
+      cancellationRequested: true,
+      updatedAt: nowIso(),
+      error: {
+        code: "CANCELLED",
+        stage: "analyze",
+        reason: "The analysis was cancelled by the user.",
+        hint: "You can retry the analysis at any time.",
+        message: "The analysis was cancelled.",
+        retryable: false,
+      },
+    }, ownerId);
   }
 
   public async retry(jobId: string, ownerId?: string): Promise<AnalysisJobRecord | undefined> {
@@ -148,9 +186,19 @@ export class AnalysisJobRunner {
     this.controllers.set(jobId, controller);
     let retryCount = initial.retryCount;
 
+    const registered = jobTokenRegistry.get(jobId);
+    let token = registered?.token;
+    if (registered && registered.expiresAt < Date.now()) {
+      jobTokenRegistry.delete(jobId);
+      token = undefined;
+    }
+
     while (true) {
       const current = await this.repository.getJob(jobId);
-      if (!current || current.status === "completed" || current.status === "cancelled" || current.cancellationRequested) return;
+      if (!current || current.status === "completed" || current.status === "cancelled" || current.cancellationRequested) {
+        jobTokenRegistry.delete(jobId);
+        return;
+      }
       const analysisId = current.analysisId ?? opaqueId("analysis");
       console.log(`[Worker] Validation complete for job ${jobId}`);
       await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", updatedAt: nowIso() });
@@ -165,6 +213,7 @@ export class AnalysisJobRunner {
         analysisId,
         signal: controller.signal,
         cacheStore: this.provider.cacheStore,
+        token,
         onProgress: (progress) => {
           const mapped = progressFor(progress);
           void this.repository.updateJob(jobId, { ...mapped, analysisId, updatedAt: nowIso() });
@@ -172,19 +221,59 @@ export class AnalysisJobRunner {
       });
 
       if (controller.signal.aborted || (await this.repository.getJob(jobId))?.cancellationRequested) {
-        await this.repository.updateJob(jobId, { status: "cancelled", stage: "completed", progress: 100, message: "The analysis was cancelled.", error: { code: "CANCELLED", message: "The analysis was cancelled.", retryable: false }, updatedAt: nowIso() });
+        jobTokenRegistry.delete(jobId);
+        await this.repository.updateJob(jobId, {
+          status: "cancelled",
+          stage: "completed",
+          progress: 100,
+          message: "The analysis was cancelled.",
+          error: {
+            code: "CANCELLED",
+            stage: "analyze",
+            reason: "The analysis was cancelled by the user.",
+            hint: "You can retry the analysis at any time.",
+            message: "The analysis was cancelled.",
+            retryable: false,
+          },
+          updatedAt: nowIso(),
+        });
         return;
       }
 
       if (!result.ok) {
         const error = safeError(result.error);
+        const structuredError = {
+          code: error.code,
+          stage: error.stage,
+          reason: error.reason,
+          message: error.message,
+          retryable: error.retryable ?? false,
+          hint: error.hint,
+          details: error.details,
+        };
         if (error.retryable && retryCount < this.options.maxRetries) {
           retryCount += 1;
-          await this.repository.updateJob(jobId, { retryCount, status: "queued", stage: "validating-input", progress: 0, message: "A temporary provider failure occurred. Retrying…", error: { code: error.code, message: error.message, retryable: true }, updatedAt: nowIso() });
+          await this.repository.updateJob(jobId, {
+            retryCount,
+            status: "queued",
+            stage: "validating-input",
+            progress: 0,
+            message: "A temporary provider failure occurred. Retrying…",
+            error: structuredError,
+            updatedAt: nowIso(),
+          });
           await this.options.sleep(this.options.retryBackoffMs * 2 ** (retryCount - 1));
           continue;
         }
-        await this.repository.updateJob(jobId, { status: "failed", stage: "completed", progress: 100, message: "The repository analysis failed.", error: { code: error.code, message: error.message, retryable: error.retryable, details: error.details }, updatedAt: nowIso() });
+        jobTokenRegistry.delete(jobId);
+        await this.repository.updateJob(jobId, {
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: "The repository analysis failed.",
+          error: structuredError,
+          updatedAt: nowIso(),
+        });
         return;
       }
 
@@ -195,12 +284,19 @@ export class AnalysisJobRunner {
       };
       await this.repository.updateJob(jobId, { analysisId, status: "analyzing", stage: "storing-result", progress: 92, message: "Saving the deterministic analysis result.", coverage: analysisResult.coverage, updatedAt: nowIso() });
       const persisted = await this.repository.saveAnalysisResult(analysisResult, current.ownerId);
-      if (!persisted) return;
+      if (!persisted) {
+        jobTokenRegistry.delete(jobId);
+        return;
+      }
       for (const diagram of analysisResult.diagrams ?? []) await this.repository.saveAnalysisDiagram(diagram, current.ownerId);
 
       if (current.explanationRequested) await this.generateExplanation(jobId, current.ownerId, analysisResult);
       const finalJob = await this.repository.getJob(jobId, current.ownerId);
-      if (!finalJob || finalJob.status === "cancelled" || finalJob.cancellationRequested) return;
+      if (!finalJob || finalJob.status === "cancelled" || finalJob.cancellationRequested) {
+        jobTokenRegistry.delete(jobId);
+        return;
+      }
+      jobTokenRegistry.delete(jobId);
       await this.repository.updateJob(jobId, { analysisId, status: "completed", stage: "completed", progress: 100, message: "Analysis complete.", coverage: analysisResult.coverage, updatedAt: nowIso() }, current.ownerId);
       return;
     }
