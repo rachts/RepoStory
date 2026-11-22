@@ -5,7 +5,6 @@ import { GET as jobGet } from "@/app/api/analyze/jobs/[jobId]/route";
 import { analysisRepository } from "@/composition/container";
 
 function createJob(overrides: Partial<AnalysisJobRecord> = {}): AnalysisJobRecord {
-  const now = new Date().toISOString();
   return {
     jobId: "stuck-job-1",
     analysisId: "analysis-stuck-1",

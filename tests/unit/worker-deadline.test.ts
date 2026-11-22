@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { InMemoryAnalysisStore } from "@/application/store";
 import { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import type { RepositoryProvider, RepositoryReference, RepositorySnapshot } from "@/domain/repository";
-import type { AnalysisBudget } from "@/shared/limits";
 import type { Result } from "@/shared/result";
 import { AppError } from "@/domain/errors";
 import type { AnalysisJobRecord } from "@/domain/analysis";
@@ -12,8 +11,6 @@ class HangingRepositoryProvider implements RepositoryProvider {
   async getSnapshot(
     _ref: RepositoryReference,
     signal?: AbortSignal,
-    _budget?: AnalysisBudget,
-    _onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
   ): Promise<Result<RepositorySnapshot, AppError>> {
     return new Promise((_resolve, reject) => {
       if (signal?.aborted) {
