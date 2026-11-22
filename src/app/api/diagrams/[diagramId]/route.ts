@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
-import { analysisRepository, analysisStore } from "@/composition/container";
+import { analysisRepository, analysisStore, cacheStore } from "@/composition/container";
 import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { toMermaid } from "@/analysis/exports";
 import { z } from "zod";
 import { AppError } from "@/domain/errors";
+import type { Diagram } from "@/domain/diagram";
 import { applyDiagramPatch } from "@/application/diagram-edits";
 import { redactPathValues } from "@/shared/redaction";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
@@ -75,6 +76,25 @@ export async function PATCH(request: Request, context: RouteContext): Promise<Ne
     const updated = redactPathValues(applyDiagramPatch(diagram, patch));
     if (job) await analysisRepository.saveAnalysisDiagram(updated, ownerId);
     else analysisStore.saveDiagram(updated);
+
+    try {
+      const anyJob = job ?? (await analysisRepository.getJobByAnalysisId(diagram.analysisId));
+      const analysis = anyJob
+        ? await analysisRepository.getAnalysisResult(diagram.analysisId, ownerId)
+        : analysisStore.get(diagram.analysisId);
+      const commitSha = analysis?.repository.commitSha;
+      const owner = analysis?.repository.owner?.toLowerCase();
+      const repo = analysis?.repository.name?.toLowerCase();
+      if (owner && repo && commitSha && cacheStore) {
+        const editsKey = `${owner}/${repo}@${commitSha}:diagram-edits`;
+        const existingEdits = (await cacheStore.get<Record<string, Diagram>>(editsKey)) ?? {};
+        existingEdits[diagram.type] = updated;
+        await cacheStore.set(editsKey, existingEdits, 24 * 3600 * 1000);
+      }
+    } catch {
+      // Non-fatal if cacheStore diagram-edits update fails
+    }
+
     return jsonResponse({ diagram: updated });
   } catch (error) {
     if (error instanceof z.ZodError) return jsonResponse({ error: { code: "INVALID_PATCH", message: "The diagram patch is invalid.", retryable: false } }, { status: 400 });

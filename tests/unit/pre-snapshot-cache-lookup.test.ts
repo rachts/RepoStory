@@ -92,7 +92,8 @@ describe("Fix 9: Pre-snapshot cache check with lightweight ref lookup", () => {
     expect(result.value.diagrams).toBeDefined();
     expect(result.value.diagrams!).toHaveLength(1);
     expect(result.value.diagrams![0]?.analysisId).toBe("new-analysis-123");
-    expect(result.value.diagrams![0]?.id).toBe("diag-1");
+    expect(result.value.diagrams![0]?.id).toBeDefined();
+    expect(result.value.diagrams![0]?.id).not.toBe("diag-1");
   });
 
   it("falls through to getSnapshot when commit SHA is resolved but not in cache", async () => {

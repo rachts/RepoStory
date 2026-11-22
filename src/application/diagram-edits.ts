@@ -43,3 +43,42 @@ export function applyDiagramPatch(diagram: Diagram, patch: DiagramPatch): Diagra
     updatedAt: new Date().toISOString(),
   });
 }
+
+export function mergeDiagramEdits(base: Diagram, edited: Diagram): Diagram {
+  const editedNodes = new Map(edited.nodes.map((n) => [n.id, n]));
+  const editedEdges = new Map(edited.edges.map((e) => [e.id, e]));
+
+  const nodes = base.nodes.map((node) => {
+    const edit = editedNodes.get(node.id);
+    if (!edit) return node;
+    return {
+      ...node,
+      technicalLabel: edit.technicalLabel ?? node.technicalLabel,
+      plainEnglishLabel: edit.plainEnglishLabel ?? node.plainEnglishLabel,
+      explanation: edit.explanation ?? node.explanation,
+      visible: edit.visible !== undefined ? edit.visible : node.visible,
+    };
+  });
+
+  const edges = base.edges.map((edge) => {
+    const edit = editedEdges.get(edge.id);
+    if (!edit) return edge;
+    return {
+      ...edge,
+      label: edit.label ?? edge.label,
+      explanation: edit.explanation ?? edge.explanation,
+      visible: edit.visible !== undefined ? edit.visible : edge.visible,
+    };
+  });
+
+  return redactPathValues({
+    ...base,
+    title: edited.title ?? base.title,
+    description: edited.description ?? base.description,
+    direction: edited.direction ?? base.direction,
+    customNote: edited.customNote ?? base.customNote,
+    nodes,
+    edges,
+    updatedAt: edited.updatedAt ?? new Date().toISOString(),
+  });
+}
