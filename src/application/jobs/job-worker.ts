@@ -27,6 +27,7 @@ export class JobWorker {
   private isRunning = false;
   private activeJobs = new Set<string>();
   private loopPromise?: Promise<void>;
+  private lastStuckJobCheck = 0;
 
   public constructor(
     queue: JobQueue,
@@ -81,6 +82,10 @@ export class JobWorker {
   private async pollLoop(): Promise<void> {
     while (this.isRunning) {
       try {
+        if (Date.now() - this.lastStuckJobCheck > 30_000) {
+          this.lastStuckJobCheck = Date.now();
+          void this.repository.recoverStuckJobs?.().catch(() => {});
+        }
         if (this.activeJobs.size < this.concurrency) {
           const item = await this.queue.claim(this.workerId);
           if (item) {
@@ -118,6 +123,7 @@ export class JobWorker {
       void this.queue.heartbeat(item.jobId, this.workerId).catch((err) => {
         console.error(`[Worker ${this.workerId}] Heartbeat ping failed for job ${item.jobId}:`, err);
       });
+      void this.repository.updateJob(item.jobId, { heartbeatAt: new Date().toISOString() }).catch(() => {});
     }, this.heartbeatIntervalMs);
 
     try {

@@ -42,6 +42,7 @@ function rowToJob(row: JsonRecord): AnalysisJobRecord {
     expiresAt: String(row.expires_at),
     retryCount: Number(row.retry_count),
     explanationRequested: Boolean(row.explanation_requested),
+    ...(typeof row.heartbeat_at === "string" ? { heartbeatAt: row.heartbeat_at } : {}),
     ...(typeof row.cancellation_requested === "boolean" ? { cancellationRequested: row.cancellation_requested } : {}),
     ...(isRecord(row.error) ? { error: row.error as unknown as AnalysisJobRecord["error"] } : {}),
     ...(isRecord(row.coverage) ? { coverage: row.coverage as unknown as AnalysisJobRecord["coverage"] } : {}),
@@ -66,6 +67,7 @@ function jobToRow(job: AnalysisJobRecord): JsonRecord {
     expires_at: job.expiresAt,
     retry_count: job.retryCount,
     explanation_requested: job.explanationRequested,
+    heartbeat_at: job.heartbeatAt ?? null,
     cancellation_requested: job.cancellationRequested ?? null,
     error: job.error ?? null,
     coverage: job.coverage ?? null,
@@ -181,8 +183,38 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   public async markExpiredJobs(now = Date.now()): Promise<number> {
     const params = new URLSearchParams({ select: "*", expires_at: `lte.${new Date(now).toISOString()}`, status: "in.(queued,fetching,analyzing,explaining)" });
     const expired = await this.jobs(params.toString());
-    for (const job of expired) await this.updateJob(job.jobId, { status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: false } });
+    for (const job of expired) await this.updateJob(job.jobId, { status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: true } });
     return expired.length;
+  }
+
+  public async recoverStuckJobs(now = Date.now(), timeoutMs = 120_000): Promise<AnalysisJobRecord[]> {
+    const params = new URLSearchParams({ select: "*", status: "in.(fetching,analyzing,explaining)" });
+    const candidates = await this.jobs(params.toString());
+    const recovered: AnalysisJobRecord[] = [];
+    for (const job of candidates) {
+      const lastActivityTime = job.heartbeatAt
+        ? new Date(job.heartbeatAt).getTime()
+        : new Date(job.updatedAt || job.createdAt).getTime();
+      if (!isNaN(lastActivityTime) && now - lastActivityTime > timeoutMs) {
+        const updated = await this.updateJob(job.jobId, {
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: "Analysis worker stopped responding",
+          error: {
+            code: "JOB_STALLED",
+            stage: "analyze",
+            message: "Analysis worker stopped responding",
+            reason: "The background analysis worker stopped reporting heartbeats.",
+            hint: "You can retry this analysis now.",
+            retryable: true,
+          },
+          updatedAt: new Date(now).toISOString(),
+        });
+        if (updated) recovered.push(updated);
+      }
+    }
+    return recovered;
   }
 
   public async deleteExpiredJobs(now = Date.now()): Promise<number> {

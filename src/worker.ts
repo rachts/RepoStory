@@ -34,17 +34,60 @@ import { initSentry } from "@/shared/sentry";
 
 initSentry();
 
-// Process-level guards against silent termination
+const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
+logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
+
+const activeJobIds = new Set<string>();
+let isCrashing = false;
+
+async function handleFatalCrash(type: string, error: unknown): Promise<void> {
+  if (isCrashing) return;
+  isCrashing = true;
+  console.error(`[RepoStory Worker] Fatal ${type}:`, error);
+
+  for (const jobId of activeJobIds) {
+    try {
+      const crashMessage = `Worker crashed unexpectedly (${type}): ${error instanceof Error ? error.message : String(error)}`;
+      await analysisRepository.updateJob(jobId, {
+        status: "failed",
+        stage: "completed",
+        progress: 100,
+        message: crashMessage,
+        error: {
+          code: "WORKER_CRASHED",
+          stage: "analyze",
+          reason: crashMessage,
+          hint: "The worker crashed. Retrying the analysis may succeed.",
+          message: crashMessage,
+          retryable: true,
+          details: error instanceof Error ? { name: error.name, ...(error.stack ? { stack: error.stack } : {}) } : undefined,
+        },
+        updatedAt: new Date().toISOString(),
+      });
+      await jobQueue.fail(jobId, workerId, {
+        code: "WORKER_CRASHED",
+        stage: "analyze",
+        reason: crashMessage,
+        hint: "The worker crashed. Retrying the analysis may succeed.",
+        message: crashMessage,
+        retryable: true,
+      });
+    } catch (cleanupErr) {
+      console.error(`[RepoStory Worker] Failed to update job ${jobId} during fatal crash:`, cleanupErr);
+    }
+  }
+
+  process.exit(1);
+}
+
+// Process-level guards against silent termination: log, fail active jobs, and exit non-zero for orchestrator restart
 process.on("unhandledRejection", (reason) => {
-  console.error("[RepoStory Worker] Unhandled promise rejection:", reason);
+  void handleFatalCrash("unhandledRejection", reason);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[RepoStory Worker] Uncaught exception:", error);
+  void handleFatalCrash("uncaughtException", error);
 });
-
-const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
-logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
 const pollIntervalMs = process.env.WORKER_POLL_INTERVAL_MS ? Number(process.env.WORKER_POLL_INTERVAL_MS) : 1_000;
 const heartbeatIntervalMs = process.env.WORKER_HEARTBEAT_INTERVAL_MS ? Number(process.env.WORKER_HEARTBEAT_INTERVAL_MS) : 15_000;
@@ -58,6 +101,7 @@ const concurrency = process.env.WORKER_CONCURRENCY ? Number(process.env.WORKER_C
  * continues polling without silently crashing.
  */
 export async function processJob(item: JobQueueItem): Promise<void> {
+  activeJobIds.add(item.jobId);
   console.log(`[Worker] Starting validation for job ${item.jobId}`);
   try {
     await analysisJobRunner.runNow(item.jobId);
@@ -121,6 +165,8 @@ export async function processJob(item: JobQueueItem): Promise<void> {
     } catch (queueErr) {
       console.error(`[Worker] Failed to mark job ${item.jobId} as failed in queue:`, queueErr);
     }
+  } finally {
+    activeJobIds.delete(item.jobId);
   }
 }
 
@@ -132,6 +178,34 @@ const worker = new JobWorker(jobQueue, analysisRepository, analysisJobRunner, {
   processJob,
 });
 
+async function startupSweep(): Promise<void> {
+  console.log(`[RepoStory Worker ${workerId}] Running startup sweep for orphaned or stuck jobs...`);
+  try {
+    if (analysisRepository.recoverStuckJobs) {
+      const recovered = await analysisRepository.recoverStuckJobs();
+      if (recovered.length > 0) {
+        console.log(`[RepoStory Worker ${workerId}] Recovered ${recovered.length} stuck jobs during startup sweep.`);
+        for (const job of recovered) {
+          try {
+            const queueItem = await jobQueue.get(job.jobId);
+            if (queueItem && queueItem.status === "running") {
+              await jobQueue.fail(job.jobId, queueItem.workerId ?? workerId, {
+                code: "JOB_STALLED",
+                stage: "analyze",
+                message: "Analysis worker stopped responding",
+                retryable: true,
+              });
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[RepoStory Worker ${workerId}] Startup sweep failed:`, err);
+  }
+}
+
+void startupSweep();
 worker.start();
 
 const shutdown = async (signal: string) => {

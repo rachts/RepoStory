@@ -203,7 +203,7 @@ export class AnalysisJobRunner {
       }
       const analysisId = current.analysisId ?? opaqueId("analysis");
       console.log(`[Worker] Validation complete for job ${jobId}`);
-      await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", updatedAt: nowIso() });
+      await this.repository.updateJob(jobId, { analysisId, status: "fetching", stage: "fetching-metadata", progress: 8, message: "Starting repository analysis.", heartbeatAt: nowIso(), updatedAt: nowIso() });
       if (process.env.REPO_STORY_TEST_JOB_DELAY_MS) {
         const delay = Number(process.env.REPO_STORY_TEST_JOB_DELAY_MS);
         if (delay > 0) {
@@ -214,17 +214,30 @@ export class AnalysisJobRunner {
       const timeoutMs = this.options.analysisTimeoutMs ?? DEFAULT_LIMITS.maxAnalysisMs;
       const timeoutSignal = AbortSignal.timeout(timeoutMs);
       const combinedSignal = AbortSignal.any([controller.signal, timeoutSignal]);
-      const result = await runAnalysis(repositoryReference(current), this.provider, scratchStore, {
-        analysisId,
-        signal: combinedSignal,
-        limits: { ...DEFAULT_LIMITS, maxAnalysisMs: timeoutMs },
-        cacheStore: this.provider.cacheStore,
-        token,
-        onProgress: (progress) => {
-          const mapped = progressFor(progress);
-          void this.repository.updateJob(jobId, { ...mapped, analysisId, updatedAt: nowIso() });
-        },
-      });
+
+      let heartbeatActive = true;
+      const heartbeatTimer = setInterval(() => {
+        if (!heartbeatActive) return;
+        void this.repository.updateJob(jobId, { heartbeatAt: nowIso() }).catch(() => {});
+      }, 15_000);
+
+      let result;
+      try {
+        result = await runAnalysis(repositoryReference(current), this.provider, scratchStore, {
+          analysisId,
+          signal: combinedSignal,
+          limits: { ...DEFAULT_LIMITS, maxAnalysisMs: timeoutMs },
+          cacheStore: this.provider.cacheStore,
+          token,
+          onProgress: (progress) => {
+            const mapped = progressFor(progress);
+            void this.repository.updateJob(jobId, { ...mapped, analysisId, heartbeatAt: nowIso(), updatedAt: nowIso() });
+          },
+        });
+      } finally {
+        heartbeatActive = false;
+        clearInterval(heartbeatTimer);
+      }
 
       if (controller.signal.aborted || (await this.repository.getJob(jobId))?.cancellationRequested) {
         jobTokenRegistry.delete(jobId);
