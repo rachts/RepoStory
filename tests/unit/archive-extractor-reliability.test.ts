@@ -66,6 +66,42 @@ describe("Archive Extractor Reliability", () => {
     expect(progressReports[progressReports.length - 1]).toBeGreaterThanOrEqual(55);
   });
 
+  it("chunked stream without totalBytes: reports asymptotic curve capped at 60 and never goes backwards", async () => {
+    const tarGzBuffer = await createTarGzBuffer([
+      { path: "src/index.ts", content: "export const x = 1;".repeat(1000) },
+      { path: "package.json", content: JSON.stringify({ name: "chunked-repo" }) },
+    ]);
+
+    const progressReports: Array<{ progress: number; message: string }> = [];
+    const stream = Readable.from(tarGzBuffer);
+
+    const result = await extractRepositoryArchive({
+      stream,
+      candidatePaths: new Set(["src/index.ts", "package.json"]),
+      limits: DEFAULT_LIMITS,
+      throttleMs: 0, // unthrottled for testing every step
+      // totalBytes intentionally omitted to test chunked curve
+      onProgress: (p) => {
+        progressReports.push({ progress: p.progress, message: p.message });
+      },
+    });
+
+    expect(result.files).toHaveLength(2);
+    expect(progressReports.length).toBeGreaterThan(0);
+
+    // Verify monotonic progress (never goes backwards)
+    for (let i = 1; i < progressReports.length; i++) {
+      expect(progressReports[i]!.progress).toBeGreaterThanOrEqual(progressReports[i - 1]!.progress);
+    }
+
+    // Verify bounded within 45 to 60
+    expect(progressReports[0]!.progress).toBeGreaterThanOrEqual(45);
+    expect(progressReports[progressReports.length - 1]!.progress).toBeLessThanOrEqual(60);
+
+    // Verify bytes received messaging
+    expect(progressReports[0]!.message).toContain("received");
+  });
+
   it("stream that errors mid-download: rejects promptly and does not hang or leak uncaught exceptions", async () => {
     const tarGzBuffer = await createTarGzBuffer([
       { path: "src/index.ts", content: "export const x = 1;" },

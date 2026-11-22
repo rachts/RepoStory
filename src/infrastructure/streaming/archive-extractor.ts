@@ -39,6 +39,7 @@ export interface ArchiveExtractionOptions {
   signal?: AbortSignal;
   inactivityTimeoutMs?: number;
   totalBytes?: number;
+  throttleMs?: number;
   onProgress?: (progress: { stage: string; progress: number; message: string }) => void;
 }
 
@@ -175,28 +176,50 @@ export async function extractRepositoryArchive(
   // Start the watchdog initially in case stream never produces any chunks
   resetWatchdog();
 
-  // Watchdog monitor pass-through stream with byte-level progress reporting (45 -> 60)
+  // Watchdog monitor pass-through stream with byte-level & time-based progress reporting (45 -> 60)
   let receivedBytes = 0;
-  let lastReportedProgress = 45;
+  let lastReportedProgress = 44;
+  let lastReportTime = 0;
+  const streamStartTime = Date.now();
+  const throttleIntervalMs = options.throttleMs ?? 1000;
+
   const watchdogPassThrough = new PassThrough();
   watchdogPassThrough.on("data", (chunk: Buffer | Uint8Array) => {
     resetWatchdog();
     receivedBytes += chunk.length;
+    const now = Date.now();
     let currentProgress: number;
+    let message: string;
+
     if (options.totalBytes && options.totalBytes > 0) {
       const ratio = Math.min(1, receivedBytes / options.totalBytes);
       currentProgress = Math.min(60, Math.max(45, Math.round(45 + ratio * 15)));
+      const totalMb = (options.totalBytes / (1024 * 1024)).toFixed(1);
+      message = `Downloading repository archive (${currentProgress}% of ${totalMb}MB)`;
     } else {
-      currentProgress = Math.min(59, Math.max(45, 45 + Math.floor(Math.log2(1 + receivedBytes / 65536))));
+      const elapsedSec = (now - streamStartTime) / 1000;
+      // Asymptotic time curve: 45 + 15 * (1 - e^(-elapsed/8)), strictly capped at 60
+      const timeCurve = 45 + Math.round(15 * (1 - Math.exp(-elapsedSec / 8)));
+      // Byte factor: scale with bytes received
+      const byteFactor = 45 + Math.floor(Math.log2(1 + receivedBytes / 512));
+      currentProgress = Math.min(60, Math.max(45, Math.max(timeCurve, byteFactor)));
+      const receivedMb = (receivedBytes / (1024 * 1024)).toFixed(1);
+      message = `Downloading repository archive (${currentProgress}% - ${receivedMb}MB received)`;
     }
-    if (currentProgress > lastReportedProgress) {
+
+    // Guarantee progress never goes backwards
+    if (currentProgress < lastReportedProgress) {
+      currentProgress = lastReportedProgress;
+    }
+
+    const isThrottled = lastReportTime > 0 && now - lastReportTime < throttleIntervalMs;
+    if (currentProgress > lastReportedProgress && (!isThrottled || currentProgress >= 60)) {
       lastReportedProgress = currentProgress;
+      lastReportTime = now;
       options.onProgress?.({
         stage: "fetch-archive",
         progress: currentProgress,
-        message: options.totalBytes
-          ? `Downloading repository archive (${currentProgress}% of ${(options.totalBytes / 1024 / 1024).toFixed(1)}MB)`
-          : `Downloading repository archive (${currentProgress}%)`,
+        message,
       });
     }
   });
