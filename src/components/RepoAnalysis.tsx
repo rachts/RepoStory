@@ -15,7 +15,10 @@ import { RepoStoryBrand } from "@/components/RepoStoryBrand";
 interface AnalysisResponse extends AnalysisJob { diagrams: Diagram[]; architectureStory?: ArchitectureStory }
 interface ExportResponse { content: string; filename: string; mimeType: string }
 interface ExportErrorResponse { error?: { code?: string; message?: string } }
-interface RepoAnalysisProps { analysisId: string }
+export interface RepoAnalysisProps {
+  analysisId: string;
+  maxPollingDurationMs?: number;
+}
 
 function isAnalysisResponse(value: unknown): value is AnalysisResponse {
   return Boolean(value && typeof value === "object" && Array.isArray((value as { diagrams?: unknown }).diagrams));
@@ -80,7 +83,10 @@ function collectEvidenceById(analysis: AnalysisResponse | null, diagrams: readon
   return evidenceById;
 }
 
-export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Element {
+export function RepoAnalysis({
+  analysisId,
+  maxPollingDurationMs: propMaxPollingDurationMs,
+}: RepoAnalysisProps): React.JSX.Element {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [job, setJob] = useState<AnalysisJobRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -104,10 +110,16 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     try {
       const pollDelays = [0, 250, 500, 1_000, 2_000, 3_000, 5_000];
       const pollStartTime = Date.now();
-      const maxPollingDurationMs = 3 * 60 * 1000;
+      const envTimeout = process.env.NEXT_PUBLIC_ANALYSIS_POLL_TIMEOUT_MS
+        ? Number(process.env.NEXT_PUBLIC_ANALYSIS_POLL_TIMEOUT_MS)
+        : undefined;
+      const maxPollingDurationMs =
+        propMaxPollingDurationMs ??
+        (Number.isFinite(envTimeout) && (envTimeout ?? 0) > 0 ? envTimeout! : 3 * 60 * 1000);
+
       for (let attempt = 0; ; attempt += 1) {
         if (Date.now() - pollStartTime > maxPollingDurationMs) {
-          setError("Analysis is taking longer than expected (3-minute timeout). Please retry.");
+          setError("Analysis timed out. Try again");
           return;
         }
         const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(analysisId)}`, { cache: "no-store", ...(signal ? { signal } : {}) });
@@ -165,7 +177,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
       if (signal?.aborted || (loadError instanceof DOMException && loadError.name === "AbortError")) return;
       setError(loadError instanceof Error ? loadError.message : "This analysis could not be loaded.");
     }
-  }, [analysisId]);
+  }, [analysisId, propMaxPollingDurationMs]);
 
   const startLoading = useCallback((): void => {
     pollControllerRef.current?.abort();
@@ -342,8 +354,18 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
       <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
       {error ? (
         <StateCard
-          title={error.toLowerCase().includes("longer than expected") || error.toLowerCase().includes("timeout") ? "Taking longer than expected." : "We couldn’t read this story."}
-          message={error}
+          title={
+            error.toLowerCase().includes("longer than expected") ||
+            error.toLowerCase().includes("timeout") ||
+            error.toLowerCase().includes("timed out")
+              ? "Analysis timed out. Try again"
+              : "We couldn’t read this story."
+          }
+          message={
+            error.toLowerCase().includes("timed out")
+              ? "The analysis is taking longer than expected. Please retry."
+              : error
+          }
           action={
             <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
               <button className="secondary-button" onClick={startLoading}>Try again</button>
@@ -370,7 +392,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
           action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
         />
       ) : (
-        <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />
+        <ProgressState progress={job?.progress ?? 0} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />
       )}
     </main>;
   }
@@ -380,8 +402,18 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     {analysis?.status === "completed" ? <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} /> : null}
     {error ? (
       <StateCard
-        title={error.toLowerCase().includes("longer than expected") || error.toLowerCase().includes("timeout") ? "Taking longer than expected." : "We couldn’t read this story."}
-        message={error}
+        title={
+          error.toLowerCase().includes("longer than expected") ||
+          error.toLowerCase().includes("timeout") ||
+          error.toLowerCase().includes("timed out")
+            ? "Analysis timed out. Try again"
+            : "We couldn’t read this story."
+        }
+        message={
+          error.toLowerCase().includes("timed out")
+            ? "The analysis is taking longer than expected. Please retry."
+            : error
+        }
         action={
           <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
             <button className="secondary-button" onClick={startLoading}>Try again</button>
