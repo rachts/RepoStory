@@ -8,6 +8,8 @@ import { explainProject, ExplainProjectError } from "@/lib/api/explain-project";
 interface ProjectExplanationPanelProps {
   analysisId: string;
   evidenceById: ReadonlyMap<string, EvidenceReference>;
+  initialExplanation?: ProjectExplanation;
+  initialUnavailable?: { code: string; message: string };
 }
 
 type ExplanationState =
@@ -16,22 +18,37 @@ type ExplanationState =
   | { status: "success"; explanation: ProjectExplanation; model: string }
   | { status: "error"; message: string; code: string; expired: boolean; unavailable: boolean; retryable: boolean };
 
-export function ProjectExplanationPanel({ analysisId, evidenceById }: ProjectExplanationPanelProps): React.JSX.Element {
-  const [state, setState] = useState<ExplanationState>({ status: "idle" });
+export function ProjectExplanationPanel({ analysisId, evidenceById, initialExplanation, initialUnavailable }: ProjectExplanationPanelProps): React.JSX.Element {
+  const [userState, setUserState] = useState<ExplanationState | null>(null);
   const requestId = useRef(0);
+
+  const derivedInitialState: ExplanationState = initialExplanation
+    ? { status: "success", explanation: initialExplanation, model: "Groq" }
+    : initialUnavailable
+      ? {
+          status: "error",
+          message: initialUnavailable.message,
+          code: initialUnavailable.code,
+          expired: false,
+          unavailable: !(initialUnavailable.code === "AI_REQUEST_REJECTED" || initialUnavailable.code === "AI_INVALID_RESPONSE"),
+          retryable: initialUnavailable.code === "AI_REQUEST_REJECTED" || initialUnavailable.code === "AI_INVALID_RESPONSE",
+        }
+      : { status: "idle" };
+
+  const state = userState ?? derivedInitialState;
 
   const requestExplanation = async (force = false): Promise<void> => {
     const currentRequest = requestId.current + 1;
     requestId.current = currentRequest;
-    setState({ status: "loading" });
+    setUserState({ status: "loading" });
     try {
       const response = await explainProject(analysisId, undefined, force);
       if (requestId.current !== currentRequest) return;
-      setState({ status: "success", explanation: response.explanation, model: response.model });
+      setUserState({ status: "success", explanation: response.explanation, model: response.model });
     } catch (error) {
       if (requestId.current !== currentRequest) return;
       const normalized = error instanceof ExplainProjectError ? error : new ExplainProjectError({ code: "AI_EXPLANATION_FAILED", message: "The project explanation could not be generated.", status: 500, retryable: true });
-      setState({
+      setUserState({
         status: "error",
         message: normalized.message,
         code: normalized.code,
