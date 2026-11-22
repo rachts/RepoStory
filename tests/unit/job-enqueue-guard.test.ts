@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { shouldRunInProcessJobs, POST as analyzePost } from "@/app/api/analyze/route";
+import { shouldRunInProcessJobs } from "@/application/jobs/job-execution-mode";
+import { POST as analyzePost } from "@/app/api/analyze/route";
 import { analysisJobRunner } from "@/composition/container";
 
 describe("Job Enqueue Guard (shouldRunInProcessJobs)", () => {

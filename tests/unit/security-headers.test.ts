@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import nextConfig from "../../next.config";
 import { handleCors } from "@/infrastructure/security/cors";
-import { middleware } from "@/middleware";
+import { proxy as middleware } from "@/proxy";
 import { NextRequest } from "next/server";
 
 describe("Workstream 10: Security Headers and CORS", () => {

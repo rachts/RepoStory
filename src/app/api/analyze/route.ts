@@ -17,6 +17,8 @@ import { serverConfig } from "@/shared/config";
 import { errorResponse, jsonResponse, readJsonBody } from "@/shared/http";
 import { getProductionConfigError } from "@/config/production-guards";
 
+import { shouldRunInProcessJobs } from "@/application/jobs/job-execution-mode";
+
 const MAX_REQUEST_BYTES = 8 * 1024;
 
 const requestSchema = z.object({
@@ -27,18 +29,7 @@ const requestSchema = z.object({
   explanationRequested: z.boolean().optional().default(false),
 }).strict();
 
-export const ANALYSIS_ROUTE_MAX_DURATION_SECONDS = 60;
-export const maxDuration = ANALYSIS_ROUTE_MAX_DURATION_SECONDS;
-
-export function shouldRunInProcessJobs(): boolean {
-  if (process.env.IN_PROCESS_JOBS !== undefined) {
-    return process.env.IN_PROCESS_JOBS.toLowerCase() === "true";
-  }
-  if (process.env.NODE_ENV === "production") {
-    return false;
-  }
-  return true;
-}
+export const maxDuration = 60;
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {

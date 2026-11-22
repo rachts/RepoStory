@@ -1,7 +1,7 @@
 import NextAuth, { type AuthOptions } from "next-auth";
 import GithubProvider from "next-auth/providers/github";
 
-export const authOptions: AuthOptions = {
+const authOptions: AuthOptions = {
   providers: [
     GithubProvider({
       // In production, real GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET are provided.
