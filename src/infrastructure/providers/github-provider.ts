@@ -28,6 +28,7 @@ export interface GitHubProviderOptions {
   cacheStore?: CacheStore;
   tokenPool?: GitHubTokenPool;
   circuitBreaker?: GitHubCircuitBreaker;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 type JsonResult<T> = Result<T, AppError>;
@@ -315,6 +316,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
   public readonly tokenPool: GitHubTokenPool;
   public readonly circuitBreaker: GitHubCircuitBreaker;
   public readonly cacheStore: CacheStore;
+  private readonly sleepImpl: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 
   public constructor(options: GitHubProviderOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -322,6 +324,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     this.tokenPool = options.tokenPool ?? new GitHubTokenPool(options.tokens || options.token);
     this.circuitBreaker = options.circuitBreaker ?? new GitHubCircuitBreaker();
     this.cacheStore = options.cacheStore ?? new InMemoryCacheStore();
+    this.sleepImpl = options.sleep;
 
     const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const mergedInit: RequestInit = {
@@ -577,11 +580,64 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           return response;
         }
 
+        let baseDelayMs: number;
+        if (retryAfter && /^\d+$/.test(retryAfter)) {
+          baseDelayMs = Number(retryAfter) * 1000;
+        } else if (reset && /^\d+$/.test(reset)) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const diffSec = Math.max(1, Number(reset) - nowSec);
+          baseDelayMs = diffSec * 1000;
+        } else {
+          baseDelayMs = 50 * 2 ** (attempt - 1);
+        }
+
+        // Full jitter (0ms to 500ms, or up to 20% of baseDelayMs)
+        const jitterMs = Math.random() * Math.min(500, Math.max(50, baseDelayMs * 0.2));
+        const backoffMs = baseDelayMs + jitterMs;
+
+        const remainingBudgetMs = budget?.remainingMs ? budget.remainingMs() : undefined;
+
+        // If a budget is active and backoff does not fit in remaining analysis budget, fail fast
+        if (remainingBudgetMs !== undefined && backoffMs >= remainingBudgetMs) {
+          throw new AppError({
+            code: "GITHUB_RATE_LIMITED",
+            stage: "fetch",
+            message: `GitHub rate limit reached. Backoff of ${Math.ceil(backoffMs / 1000)}s exceeds remaining analysis budget (${Math.floor(remainingBudgetMs / 1000)}s).`,
+            reason: `GitHub API returned ${response.status} with backoff of ${Math.round(backoffMs)}ms, exceeding remaining budget of ${Math.round(remainingBudgetMs)}ms.`,
+            hint: "The job will be requeued with a delay.",
+            retryable: true,
+            details: {
+              resetAt: resetEpoch,
+              retryAt: new Date(resetEpoch * 1000).toISOString(),
+              retryAfterSeconds: Math.ceil(backoffMs / 1000),
+              backoffMs: Math.round(backoffMs),
+              remainingBudgetMs: Math.round(remainingBudgetMs),
+            },
+          });
+        }
+
         if (attempt < maxAttempts && !this.circuitBreaker.isOpen()) {
-          const backoffMs = retryAfter && /^\d+$/.test(retryAfter)
-            ? Math.min(Number(retryAfter) * 1000, 100)
-            : Math.min(50 * 2 ** (attempt - 1), 100);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          if (this.sleepImpl) {
+            await this.sleepImpl(backoffMs, fetchOptions.signal ?? undefined);
+          } else if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs, 10)));
+          } else {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, backoffMs);
+              if (fetchOptions.signal) {
+                const onAbort = () => {
+                  clearTimeout(timer);
+                  reject(fetchOptions.signal?.reason ?? new AppError({ code: "ANALYSIS_TIMEOUT", message: "Aborted while waiting for rate-limit backoff.", retryable: true }));
+                };
+                if (fetchOptions.signal.aborted) {
+                  clearTimeout(timer);
+                  reject(fetchOptions.signal.reason);
+                  return;
+                }
+                fetchOptions.signal.addEventListener("abort", onAbort, { once: true });
+              }
+            });
+          }
           continue;
         }
 
