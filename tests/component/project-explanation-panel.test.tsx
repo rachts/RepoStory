@@ -95,4 +95,44 @@ describe("ProjectExplanationPanel", () => {
     expect(screen.getByText("Evidence-backed explanation")).toBeInTheDocument();
     expect(screen.getByText("A small web application.")).toBeInTheDocument();
   });
+
+  it("renders neutral non-red notice and enabled Try again for retryable AI failure AI_INVALID_RESPONSE", () => {
+    render(
+      <ProjectExplanationPanel
+        analysisId="analysis-ui"
+        evidenceById={evidenceById}
+        initialUnavailable={{
+          code: "AI_INVALID_RESPONSE",
+          message: "The AI explanation response did not match the required schema.",
+        }}
+      />,
+    );
+
+    const feedback = screen.getByRole("status");
+    expect(feedback).toHaveClass("project-explanation-feedback", "is-neutral");
+    expect(feedback).not.toHaveClass("is-error");
+    expect(screen.getByText("The AI explanation is temporarily unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("The analysis and diagrams below are built from verified static findings and are unaffected.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Try again" })).not.toBeDisabled();
+  });
+
+  it("renders red alert styling for configuration errors like AI_AUTH_FAILED", () => {
+    render(
+      <ProjectExplanationPanel
+        analysisId="analysis-ui"
+        evidenceById={evidenceById}
+        initialUnavailable={{
+          code: "AI_AUTH_FAILED",
+          message: "The AI explanation credentials were rejected.",
+        }}
+      />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveClass("project-explanation-feedback", "is-error");
+    expect(alert).not.toHaveClass("is-neutral");
+    expect(screen.getByText("AI explanation is unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("The AI explanation credentials were rejected.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Explain this project" })).toBeDisabled();
+  });
 });
