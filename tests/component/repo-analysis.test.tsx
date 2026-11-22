@@ -286,4 +286,51 @@ describe("RepoAnalysis diagram navigation", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls.some(([url]) => url === "/api/exports")).toBe(false);
   });
+
+  it("stops polling after 3 minutes and shows taking too long state with retry CTA", async () => {
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const pendingJob = {
+      jobId: "job-timeout-test",
+      repositoryUrl: "https://github.com/fixture/ui-fixture",
+      status: "analyzing",
+      stage: "analyzing",
+      progress: 45,
+    };
+
+    const retriedJob = {
+      ...pendingJob,
+      status: "queued",
+      stage: "validating-input",
+      progress: 0,
+    };
+
+    fetchMock.mockImplementation(async (url: string) => {
+      if (typeof url === "string" && url.includes("/retry")) {
+        return { ok: true, json: async () => ({ job: retriedJob }) };
+      }
+      now += 181_000;
+      return { ok: true, json: async () => pendingJob };
+    });
+
+    render(<RepoAnalysis analysisId="job-timeout-test" />);
+
+    await screen.findByText("Taking longer than expected.");
+    expect(screen.getByText(/3-minute timeout/)).toBeInTheDocument();
+
+    const retryButton = screen.getByRole("button", { name: "Retry analysis" });
+    expect(retryButton).toBeInTheDocument();
+
+    fireEvent.click(retryButton);
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining("/api/analyze/jobs/job-timeout-test/retry"),
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+
+    nowSpy.mockRestore();
+  });
 });
