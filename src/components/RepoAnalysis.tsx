@@ -54,6 +54,80 @@ function fallbackNodePosition(index: number, direction: DiagramDirection): { x: 
   return { x: index * spacing * (direction === "RL" ? -1 : 1), y: 80 };
 }
 
+function createStructureFallbackDiagram(analysis: AnalysisResponse): Diagram {
+  const repoName = analysis.repository.name || "Repository";
+  const repoDesc = analysis.repository.description || "Repository root";
+  const createdAt = new Date().toISOString();
+
+  const rootDirs = new Set<string>();
+  const evidenceList: EvidenceReference[] = [];
+
+  for (const finding of analysis.findings ?? []) {
+    for (const ev of finding.evidence ?? []) {
+      if (ev.filePath) {
+        evidenceList.push(ev);
+        const topDir = ev.filePath.split("/")[0];
+        if (topDir && !topDir.includes(".")) {
+          rootDirs.add(topDir);
+        }
+      }
+    }
+  }
+
+  const nodes: DiagramNode[] = [
+    {
+      id: "repo",
+      technicalLabel: repoName,
+      plainEnglishLabel: "Repository",
+      explanation: repoDesc,
+      kind: "directory",
+      visible: true,
+      confidence: "medium",
+      evidence: evidenceList.slice(0, 3),
+      position: { x: 120, y: 80 },
+    },
+  ];
+
+  const sortedDirs = Array.from(rootDirs).sort();
+  sortedDirs.forEach((dir, idx) => {
+    nodes.push({
+      id: `dir-${dir}`,
+      technicalLabel: dir,
+      plainEnglishLabel: `${dir} directory`,
+      explanation: "Top-level area detected in repository evidence.",
+      kind: "directory",
+      visible: true,
+      confidence: "medium",
+      evidence: evidenceList.filter((e) => e.filePath?.startsWith(`${dir}/`)).slice(0, 3),
+      position: fallbackNodePosition(idx + 1, "TB"),
+    });
+  });
+
+  const edges: DiagramEdge[] = sortedDirs.map((dir) => ({
+    id: `edge-repo-${dir}`,
+    source: "repo",
+    target: `dir-${dir}`,
+    label: "contains",
+    explanation: "Repository contains directory",
+    visible: true,
+    confidence: "medium",
+    evidence: [],
+  }));
+
+  return {
+    id: `fallback-structure-${analysis.id}`,
+    analysisId: analysis.id,
+    type: "repository-structure",
+    title: "Repository structure (fallback)",
+    description: "Fallback repository structure generated from analyzed finding paths.",
+    direction: "TB",
+    nodes,
+    edges,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
 function getSupportedDiagrams(diagrams: readonly Diagram[]): Diagram[] {
   return diagrams
     .filter((item) => SUPPORTED_DIAGRAM_TYPES.includes(item.type))
@@ -94,6 +168,7 @@ export function RepoAnalysis({
   const [includeArchitectureSummary, setIncludeArchitectureSummary] = useState(true);
   const [selectedElement, setSelectedElement] = useState<{ type: "node" | "edge"; id: string } | null>(null);
   const [draft, setDraft] = useState<Diagram | null>(null);
+  const [fallbackDiagram, setFallbackDiagram] = useState<Diagram | null>(null);
   const [history, setHistory] = useState<Diagram[]>([]);
   const [future, setFuture] = useState<Diagram[]>([]);
   const [saved, setSaved] = useState(true);
@@ -193,6 +268,7 @@ export function RepoAnalysis({
     setSelectedId(null);
     setSelectedElement(null);
     setDraft(null);
+    setFallbackDiagram(null);
     setHistory([]);
     setFuture([]);
     setSaved(true);
@@ -203,7 +279,21 @@ export function RepoAnalysis({
     return () => pollControllerRef.current?.abort();
   }, [startLoading]);
 
-  const availableDiagrams = useMemo(() => getSupportedDiagrams(analysis?.diagrams ?? []), [analysis?.diagrams]);
+  const availableDiagrams = useMemo(() => getSupportedDiagrams([...(analysis?.diagrams ?? []), ...(fallbackDiagram ? [fallbackDiagram] : [])]), [analysis?.diagrams, fallbackDiagram]);
+  const effectiveAvailability = useMemo(() => {
+    if (analysis?.diagramAvailability && analysis.diagramAvailability.length > 0) {
+      return analysis.diagramAvailability;
+    }
+    if (analysis?.architectureStory?.coverage.diagramAvailability && analysis.architectureStory.coverage.diagramAvailability.length > 0) {
+      return analysis.architectureStory.coverage.diagramAvailability;
+    }
+    return [
+      { type: "system-overview" as const, available: false, reason: "Not enough technology evidence was found." },
+      { type: "api-request-flow" as const, available: false, reason: "No evidence-backed API routes were detected." },
+      { type: "authentication-flow" as const, available: false, reason: "No meaningful authentication evidence was detected." },
+      { type: "repository-structure" as const, available: false, reason: "No structural evidence was generated." },
+    ];
+  }, [analysis]);
   const evidenceById = useMemo(() => collectEvidenceById(analysis, availableDiagrams), [analysis, availableDiagrams]);
   const diagram = draft ?? availableDiagrams.find((item) => item.id === selectedId) ?? availableDiagrams[0] ?? null;
   const story = analysis?.architectureStory;
@@ -427,7 +517,44 @@ export function RepoAnalysis({
           </div>
         }
       />
-    ) : analysis.status === "failed" ? <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} /> : !diagram ? story ? <StoryWithoutDiagram analysis={analysis} story={story} evidenceById={evidenceById} /> : <StateCard title="No supported diagram is available." message="No supported diagrams are available for this repository." details={<AvailabilityList availability={analysis.diagramAvailability} />} /> : <>
+    ) : analysis.status === "failed" ? (
+      <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} />
+    ) : !diagram ? (
+      story ? (
+        <StoryWithoutDiagram
+          analysis={analysis}
+          story={story}
+          evidenceById={evidenceById}
+          availability={effectiveAvailability}
+          onLoadStructureFallback={() => {
+            const fb = createStructureFallbackDiagram(analysis);
+            setFallbackDiagram(fb);
+            setSelectedId(fb.id);
+          }}
+        />
+      ) : (
+        <StateCard
+          title="No supported diagram is available."
+          message="No supported diagrams are available for this repository."
+          details={<AvailabilityList availability={effectiveAvailability} />}
+          action={
+            <div style={{ marginTop: "20px" }}>
+              <button
+                className="secondary-button"
+                data-testid="load-structure-fallback"
+                onClick={() => {
+                  const fb = createStructureFallbackDiagram(analysis);
+                  setFallbackDiagram(fb);
+                  setSelectedId(fb.id);
+                }}
+              >
+                Show repository structure fallback
+              </button>
+            </div>
+          }
+        />
+      )
+    ) : <>
         <div className="diagram-toolbar page-width"><strong>Diagram workspace</strong><span className={saved ? "save-state" : "save-state unsaved"}>{feedback || (saved ? "Saved" : "Unsaved changes")}</span><button aria-label="Undo" className="toolbar-button" onClick={undo} disabled={!history.length || exportState !== "idle"}>Undo</button><button aria-label="Redo" className="toolbar-button" onClick={redo} disabled={!future.length || exportState !== "idle"}>Redo</button><button className="toolbar-button" onClick={() => void reset()} disabled={exportState !== "idle"}>Reset</button><button className="primary-button" onClick={() => void save()} disabled={saved || exportState !== "idle"}>Save changes</button></div>
         <section className="results-layout page-width"><aside className="diagram-sidebar"><p className="eyebrow"><span className="eyebrow-line" /> Story maps</p><h1>{analysis.repository.name}</h1><p className="sidebar-description">{analysis.repository.description ?? "A guided view of the codebase."}</p><div className="diagram-list" aria-label="Available story maps">{availableDiagrams.map((item, index) => <button key={item.id} aria-label={`${DIAGRAM_TYPE_LABELS[item.type]}: ${item.title}`} className={`diagram-item ${item.id === diagram.id ? "active" : ""}`} data-diagram-type={item.type} onClick={() => selectDiagram(item)}><span className="diagram-index">{String(index + 1).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{DIAGRAM_TYPE_LABELS[item.type]} · {item.nodes.length} nodes · {item.edges.length} connections</small></span><span>→</span></button>)}{analysis.diagramAvailability?.filter((item) => !item.available).map((item) => <div key={item.type} className="unavailable-diagram"><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><small>{item.reason ?? "Not enough evidence to generate this diagram."}</small></div>)}</div><div className="sidebar-note"><span>✦</span><p>Every label is grounded in repository evidence.</p></div></aside>
            <div className="results-main"><div className="results-title"><div><p className="eyebrow"><span className="eyebrow-line" /> Interactive preview</p><h2>{diagram.title}</h2><p>{diagram.description}</p></div><div className="toggle" role="group" aria-label="Label language"><button className={mode === "technical" ? "selected" : ""} aria-pressed={mode === "technical"} onClick={() => setMode("technical")}>Technical</button><button className={mode === "plain" ? "selected" : ""} aria-pressed={mode === "plain"} onClick={() => setMode("plain")}>Plain English</button></div></div><div className="flow-wrap" role="region" aria-label={`${diagram.title} diagram`}><ReactFlow nodes={nodes} edges={edges} fitView onNodeClick={(_event, node) => setSelectedElement({ type: "node", id: node.id })} onEdgeClick={(_event, edge) => setSelectedElement({ type: "edge", id: edge.id })}><Background color="#d9d8cf" gap={24} /><Controls /></ReactFlow></div><div className="results-toolbar"><label className="direction-control">Direction<select value={diagram.direction} onChange={(event) => updateDiagram({ direction: event.target.value as DiagramDirection })} disabled={exportState !== "idle"}><option value="TB">Top to bottom</option><option value="LR">Left to right</option><option value="RL">Right to left</option><option value="BT">Bottom to top</option></select></label><button className="secondary-button" onClick={() => void copyExport("mermaid")} disabled={exportState !== "idle"}>Copy Mermaid</button><button className="primary-button" onClick={() => void copyExport("markdown")} disabled={exportState !== "idle"}>Copy README Markdown</button>{exportState !== "idle" ? <span className="export-status" role="status" aria-live="polite">{exportState === "saving" ? "Saving changes before export…" : "Generating export…"}</span> : null}{exportError ? <p className="export-error" role="alert">{exportError}</p> : null}</div><EvidenceSection evidence={evidence} /></div>
@@ -486,7 +613,19 @@ function StoryFirstWorkspace(props: StoryFirstWorkspaceProps): React.JSX.Element
   </main>;
 }
 
-function StoryWithoutDiagram({ analysis, story, evidenceById }: { analysis: AnalysisResponse; story: ArchitectureStory; evidenceById: ReadonlyMap<string, EvidenceReference> }): React.JSX.Element {
+function StoryWithoutDiagram({
+  analysis,
+  story,
+  evidenceById,
+  availability,
+  onLoadStructureFallback,
+}: {
+  analysis: AnalysisResponse;
+  story: ArchitectureStory;
+  evidenceById: ReadonlyMap<string, EvidenceReference>;
+  availability?: AnalysisJob["diagramAvailability"];
+  onLoadStructureFallback?: () => void;
+}): React.JSX.Element {
   const isEmpty = story.coverage.status === "empty";
   return <main className="analysis-page">
     <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{analysis.repository.owner}/{analysis.repository.name}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
@@ -494,7 +633,22 @@ function StoryWithoutDiagram({ analysis, story, evidenceById }: { analysis: Anal
     <ArchitectureSteps story={story} />
     <CoverageSummary story={story} />
     <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} />
-    <StateCard title={isEmpty ? "No evidence-backed map is available." : "No visual map is available."} message={isEmpty ? story.plainEnglishSummary : "The plain-English story is available, but no supported diagram was generated from the analyzed evidence."} details={<AvailabilityList availability={analysis.diagramAvailability} />} />
+    <StateCard
+      title={isEmpty ? "No evidence-backed map is available." : "No visual map is available."}
+      message={isEmpty ? story.plainEnglishSummary : "The plain-English story is available, but no supported diagram was generated from the analyzed evidence."}
+      details={<AvailabilityList availability={availability ?? analysis.diagramAvailability} />}
+      action={onLoadStructureFallback ? (
+        <div style={{ marginTop: "20px" }}>
+          <button
+            className="secondary-button"
+            data-testid="load-structure-fallback"
+            onClick={onLoadStructureFallback}
+          >
+            Show repository structure fallback
+          </button>
+        </div>
+      ) : undefined}
+    />
   </main>;
 }
 
