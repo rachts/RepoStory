@@ -37,7 +37,7 @@ export function shouldRunInProcessJobs(): boolean {
   if (process.env.NODE_ENV === "production") {
     return false;
   }
-  return serverConfig.queueMode === "memory";
+  return true;
 }
 
 export async function POST(request: Request): Promise<NextResponse> {
@@ -146,9 +146,9 @@ export async function POST(request: Request): Promise<NextResponse> {
       }
     }
 
-    if (created.created) {
+    if (created.created || job.status === "queued") {
       const payload = encryptedPayload ? { encryptedToken: encryptedPayload } : undefined;
-      await jobQueue.enqueue(job.jobId, { payload });
+      await jobQueue.enqueue(job.jobId, { payload }).catch(() => {});
       if (shouldRunInProcessJobs()) {
         analysisJobRunner.enqueue(job.jobId, effectiveToken ? { token: effectiveToken } : undefined);
       }

@@ -8,7 +8,12 @@ async function main() {
   fs.mkdirSync(screenshotDir, { recursive: true });
 
   console.log("[E2E] Launching Chromium browser (1440x900)...");
-  const browser = await chromium.launch({ headless: true });
+  const CHROME_PATH = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
+  const launchOptions: { headless: boolean; executablePath?: string } = { headless: true };
+  if (fs.existsSync(CHROME_PATH)) {
+    launchOptions.executablePath = CHROME_PATH;
+  }
+  const browser = await chromium.launch(launchOptions);
   const context = await browser.newContext({
     viewport: { width: 1440, height: 900 },
   });

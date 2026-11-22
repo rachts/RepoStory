@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
-import { analysisRepository, jobQueue } from "@/composition/container";
+import { analysisRepository, jobQueue, analysisJobRunner } from "@/composition/container";
 import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { jsonResponse, inferErrorStage, inferErrorHint } from "@/shared/http";
 import { redactPathValues } from "@/shared/redaction";
+import { shouldRunInProcessJobs } from "@/app/api/analyze/route";
 
 interface RouteContext { params: Promise<{ jobId: string }> }
 
@@ -40,7 +41,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
     job.status !== "cancelled" &&
     job.status !== "expired";
 
-  const STALE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+  const STALE_TIMEOUT_MS = 90 * 1000; // 90 seconds
   const lastUpdatedTime = new Date(job.updatedAt || job.createdAt).getTime();
   const isStale = isStaleCandidate && !isNaN(lastUpdatedTime) && Date.now() - lastUpdatedTime > STALE_TIMEOUT_MS;
 
@@ -142,6 +143,10 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
       : new Date(effectiveJob.updatedAt || effectiveJob.createdAt).getTime();
     const isOffline = !isNaN(lastHeartbeatMs) && Date.now() - lastHeartbeatMs > WORKER_OFFLINE_THRESHOLD_MS;
     workerStatus = isOffline ? "offline" : "active";
+  }
+
+  if (effectiveJob.status === "queued" && shouldRunInProcessJobs()) {
+    analysisJobRunner.enqueue(effectiveJob.jobId);
   }
 
   return jsonResponse(redactPathValues({
