@@ -140,6 +140,9 @@ export class AnalysisJobRunner {
   public async retry(jobId: string, ownerId?: string): Promise<AnalysisJobRecord | undefined> {
     const job = await this.repository.getJob(jobId, ownerId);
     if (!job || job.status !== "failed" || !job.error?.retryable || job.retryCount >= this.options.maxRetries) return undefined;
+    this.controllers.get(jobId)?.abort();
+    this.controllers.delete(jobId);
+    this.running.delete(jobId);
     const retried = await this.repository.updateJob(jobId, { status: "queued", stage: "validating-input", progress: 0, message: "Retry queued.", retryCount: job.retryCount + 1, cancellationRequested: false, error: undefined, updatedAt: nowIso() }, ownerId);
     if (retried) this.enqueue(jobId);
     return retried;

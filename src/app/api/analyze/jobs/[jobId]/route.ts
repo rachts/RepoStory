@@ -56,41 +56,36 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
       retryable: true,
     };
 
-    const updated = await analysisRepository.updateJob(
-      jobId,
-      {
-        status: "failed",
-        stage: "completed",
-        progress: 100,
-        message: stalledMessage,
-        error: stalledError,
-        updatedAt: new Date().toISOString(),
-      },
-      identity.value.ownerId,
-    );
-
-    effectiveJob = updated ?? {
-      ...job,
-      status: "failed",
-      stage: "completed",
+    const patch = {
+      status: "failed" as const,
+      stage: "completed" as const,
       progress: 100,
       message: stalledMessage,
       error: stalledError,
       updatedAt: new Date().toISOString(),
     };
 
-    try {
-      const queueItem = await jobQueue.get(jobId);
-      if (queueItem && queueItem.status === "running") {
-        await jobQueue.fail(jobId, queueItem.workerId ?? "stalled-sweeper", {
-          code: "JOB_STALLED",
-          stage: "analyze",
-          message: stalledMessage,
-          retryable: true,
-        });
+    const updateResult = analysisRepository.updateJobIfStatus
+      ? await analysisRepository.updateJobIfStatus(jobId, patch, ["fetching", "analyzing", "explaining"], identity.value.ownerId)
+      : { won: true, job: await analysisRepository.updateJob(jobId, patch, identity.value.ownerId) };
+
+    if (updateResult.won && updateResult.job) {
+      effectiveJob = updateResult.job;
+      try {
+        const queueItem = await jobQueue.get(jobId);
+        if (queueItem && queueItem.status === "running") {
+          await jobQueue.fail(jobId, queueItem.workerId ?? "stalled-sweeper", {
+            code: "JOB_STALLED",
+            stage: "analyze",
+            message: stalledMessage,
+            retryable: true,
+          });
+        }
+      } catch {
+        // Ignore queue error if in-memory queue or not queued
       }
-    } catch {
-      // Ignore queue error if in-memory queue or not queued
+    } else {
+      effectiveJob = updateResult.job ?? (await analysisRepository.getJob(jobId, identity.value.ownerId)) ?? job;
     }
   } else if (isStale) {
     const timeoutMessage = "Job timed out during validation. The worker may be offline or crashed.";
@@ -100,28 +95,37 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
       retryable: true,
     };
 
-    const updated = await analysisRepository.updateJob(
-      jobId,
-      {
-        status: "failed",
-        stage: "completed",
-        progress: 100,
-        message: timeoutMessage,
-        error: timeoutError,
-        updatedAt: new Date().toISOString(),
-      },
-      identity.value.ownerId,
-    );
-
-    effectiveJob = updated ?? {
-      ...job,
-      status: "failed",
-      stage: "completed",
+    const patch = {
+      status: "failed" as const,
+      stage: "completed" as const,
       progress: 100,
       message: timeoutMessage,
       error: timeoutError,
       updatedAt: new Date().toISOString(),
     };
+
+    const updateResult = analysisRepository.updateJobIfStatus
+      ? await analysisRepository.updateJobIfStatus(jobId, patch, ["queued"], identity.value.ownerId)
+      : { won: true, job: await analysisRepository.updateJob(jobId, patch, identity.value.ownerId) };
+
+    if (updateResult.won && updateResult.job) {
+      effectiveJob = updateResult.job;
+      try {
+        const queueItem = await jobQueue.get(jobId);
+        if (queueItem && (queueItem.status === "queued" || queueItem.status === "running")) {
+          await jobQueue.fail(jobId, queueItem.workerId ?? "stale-validation-sweeper", {
+            code: "VALIDATION_TIMEOUT",
+            stage: "validate",
+            message: timeoutMessage,
+            retryable: true,
+          });
+        }
+      } catch {
+        // Ignore queue error if in-memory queue or not queued
+      }
+    } else {
+      effectiveJob = updateResult.job ?? (await analysisRepository.getJob(jobId, identity.value.ownerId)) ?? job;
+    }
   }
 
   return jsonResponse(redactPathValues({

@@ -115,6 +115,23 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     return structuredClone(updated);
   }
 
+  public async updateJobIfStatus(
+    jobId: string,
+    patch: AnalysisJobPatch,
+    expectedStatuses: DurableAnalysisJob["status"][],
+    ownerId?: string,
+  ): Promise<{ won: boolean; job?: DurableAnalysisJob }> {
+    const current = this.durableJobs.get(jobId);
+    if (!current || (ownerId && current.ownerId !== ownerId)) {
+      return { won: false };
+    }
+    if (!expectedStatuses.includes(current.status)) {
+      return { won: false, job: structuredClone(current) };
+    }
+    const updated = await this.updateJob(jobId, patch, ownerId);
+    return { won: true, job: updated };
+  }
+
   public async findReusableJob(cacheKey: string, ownerId: string, now = Date.now()): Promise<DurableAnalysisJob | undefined> {
     this.purgeExpired(now);
     const candidates = [...this.durableJobs.values()]
