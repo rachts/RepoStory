@@ -103,7 +103,13 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     setError("");
     try {
       const pollDelays = [0, 250, 500, 1_000, 2_000, 3_000, 5_000];
+      const pollStartTime = Date.now();
+      const maxPollingDurationMs = 3 * 60 * 1000;
       for (let attempt = 0; ; attempt += 1) {
+        if (Date.now() - pollStartTime > maxPollingDurationMs) {
+          setError("Analysis is taking longer than expected (3-minute timeout). Please retry.");
+          return;
+        }
         const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(analysisId)}`, { cache: "no-store", ...(signal ? { signal } : {}) });
         const payload = await response.json().catch(() => null) as AnalysisJobRecord | AnalysisResponse | { error?: { message?: string } } | null;
         if (isAnalysisResponse(payload)) {
@@ -243,16 +249,18 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     }
   };
   const cancelJob = async (): Promise<void> => {
-    if (!job || isTerminalJob(job.status)) return;
+    const targetJobId = job?.jobId || analysisId;
+    if (!targetJobId || (job && isTerminalJob(job.status))) return;
     pollControllerRef.current?.abort();
-    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(targetJobId)}/cancel`, { method: "POST" });
     const payload = await response.json().catch(() => null) as { job?: AnalysisJobRecord; error?: { message?: string } } | null;
     if (!response.ok || !payload?.job) { setError(payload?.error?.message ?? "The analysis could not be cancelled."); return; }
     setJob(payload.job);
   };
   const retryJob = async (): Promise<void> => {
-    if (!job) return;
-    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(job.jobId)}/retry`, { method: "POST" });
+    const targetJobId = job?.jobId || analysisId;
+    if (!targetJobId) return;
+    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(targetJobId)}/retry`, { method: "POST" });
     const payload = await response.json().catch(() => null) as { job?: AnalysisJobRecord; error?: { message?: string } } | null;
     if (!response.ok || !payload?.job) { setError(payload?.error?.message ?? "The analysis could not be retried."); return; }
     setError("");
@@ -332,14 +340,56 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
   if (!analysis) {
     return <main className="analysis-page">
       <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
-      {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : job?.status === "failed" ? <StateCard title="The analysis stopped early." message={job.error?.message ?? "The repository could not be analyzed."} action={job.error?.retryable ? <button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button> : undefined} /> : job?.status === "cancelled" ? <StateCard title="Analysis cancelled." message="No completed result was saved. You can start a new analysis from the home page." /> : job?.status === "expired" ? <StateCard title="This analysis expired." message="Analyze the repository again to create a fresh result." /> : <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />}
+      {error ? (
+        <StateCard
+          title={error.toLowerCase().includes("longer than expected") || error.toLowerCase().includes("timeout") ? "Taking longer than expected." : "We couldn’t read this story."}
+          message={error}
+          action={
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+              <button className="secondary-button" onClick={startLoading}>Try again</button>
+              <button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>
+            </div>
+          }
+        />
+      ) : job?.status === "failed" ? (
+        <StateCard
+          title="The analysis stopped early."
+          message={job.error?.message ?? "The repository could not be analyzed."}
+          action={<button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : job?.status === "cancelled" ? (
+        <StateCard
+          title="Analysis cancelled."
+          message="No completed result was saved. You can start a new analysis from the home page."
+          action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : job?.status === "expired" ? (
+        <StateCard
+          title="This analysis expired."
+          message="Analyze the repository again to create a fresh result."
+          action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : (
+        <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />
+      )}
     </main>;
   }
 
   return <main className="analysis-page">
     <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{analysis ? `${analysis.repository.owner}/${analysis.repository.name}` : job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
     {analysis?.status === "completed" ? <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} /> : null}
-    {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : analysis.status === "failed" ? <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} /> : !diagram ? story ? <StoryWithoutDiagram analysis={analysis} story={story} evidenceById={evidenceById} /> : <StateCard title="No supported diagram is available." message="No supported diagrams are available for this repository." details={<AvailabilityList availability={analysis.diagramAvailability} />} /> : <>
+    {error ? (
+      <StateCard
+        title={error.toLowerCase().includes("longer than expected") || error.toLowerCase().includes("timeout") ? "Taking longer than expected." : "We couldn’t read this story."}
+        message={error}
+        action={
+          <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+            <button className="secondary-button" onClick={startLoading}>Try again</button>
+            <button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>
+          </div>
+        }
+      />
+    ) : analysis.status === "failed" ? <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} /> : !diagram ? story ? <StoryWithoutDiagram analysis={analysis} story={story} evidenceById={evidenceById} /> : <StateCard title="No supported diagram is available." message="No supported diagrams are available for this repository." details={<AvailabilityList availability={analysis.diagramAvailability} />} /> : <>
         <div className="diagram-toolbar page-width"><strong>Diagram workspace</strong><span className={saved ? "save-state" : "save-state unsaved"}>{feedback || (saved ? "Saved" : "Unsaved changes")}</span><button aria-label="Undo" className="toolbar-button" onClick={undo} disabled={!history.length || exportState !== "idle"}>Undo</button><button aria-label="Redo" className="toolbar-button" onClick={redo} disabled={!future.length || exportState !== "idle"}>Redo</button><button className="toolbar-button" onClick={() => void reset()} disabled={exportState !== "idle"}>Reset</button><button className="primary-button" onClick={() => void save()} disabled={saved || exportState !== "idle"}>Save changes</button></div>
         <section className="results-layout page-width"><aside className="diagram-sidebar"><p className="eyebrow"><span className="eyebrow-line" /> Story maps</p><h1>{analysis.repository.name}</h1><p className="sidebar-description">{analysis.repository.description ?? "A guided view of the codebase."}</p><div className="diagram-list" aria-label="Available story maps">{availableDiagrams.map((item, index) => <button key={item.id} aria-label={`${DIAGRAM_TYPE_LABELS[item.type]}: ${item.title}`} className={`diagram-item ${item.id === diagram.id ? "active" : ""}`} data-diagram-type={item.type} onClick={() => selectDiagram(item)}><span className="diagram-index">{String(index + 1).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{DIAGRAM_TYPE_LABELS[item.type]} · {item.nodes.length} nodes · {item.edges.length} connections</small></span><span>→</span></button>)}{analysis.diagramAvailability?.filter((item) => !item.available).map((item) => <div key={item.type} className="unavailable-diagram"><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><small>{item.reason ?? "Not enough evidence to generate this diagram."}</small></div>)}</div><div className="sidebar-note"><span>✦</span><p>Every label is grounded in repository evidence.</p></div></aside>
            <div className="results-main"><div className="results-title"><div><p className="eyebrow"><span className="eyebrow-line" /> Interactive preview</p><h2>{diagram.title}</h2><p>{diagram.description}</p></div><div className="toggle" role="group" aria-label="Label language"><button className={mode === "technical" ? "selected" : ""} aria-pressed={mode === "technical"} onClick={() => setMode("technical")}>Technical</button><button className={mode === "plain" ? "selected" : ""} aria-pressed={mode === "plain"} onClick={() => setMode("plain")}>Plain English</button></div></div><div className="flow-wrap" role="region" aria-label={`${diagram.title} diagram`}><ReactFlow nodes={nodes} edges={edges} fitView onNodeClick={(_event, node) => setSelectedElement({ type: "node", id: node.id })} onEdgeClick={(_event, edge) => setSelectedElement({ type: "edge", id: edge.id })}><Background color="#d9d8cf" gap={24} /><Controls /></ReactFlow></div><div className="results-toolbar"><label className="direction-control">Direction<select value={diagram.direction} onChange={(event) => updateDiagram({ direction: event.target.value as DiagramDirection })} disabled={exportState !== "idle"}><option value="TB">Top to bottom</option><option value="LR">Left to right</option><option value="RL">Right to left</option><option value="BT">Bottom to top</option></select></label><button className="secondary-button" onClick={() => void copyExport("mermaid")} disabled={exportState !== "idle"}>Copy Mermaid</button><button className="primary-button" onClick={() => void copyExport("markdown")} disabled={exportState !== "idle"}>Copy README Markdown</button>{exportState !== "idle" ? <span className="export-status" role="status" aria-live="polite">{exportState === "saving" ? "Saving changes before export…" : "Generating export…"}</span> : null}{exportError ? <p className="export-error" role="alert">{exportError}</p> : null}</div><EvidenceSection evidence={evidence} /></div>
