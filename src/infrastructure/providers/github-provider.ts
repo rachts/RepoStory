@@ -1,7 +1,7 @@
 import type { RepositoryProvider, RepositoryReference, RepositorySnapshot, RepositoryFile } from "@/domain/repository";
 import { AppError } from "@/domain/errors";
 import { err, ok, type Result } from "@/shared/result";
-import { DEFAULT_LIMITS, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
+import { DEFAULT_LIMITS, DEFAULT_MAX_HEAP_BYTES, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
 import { filterFiles } from "@/analysis/filter-files";
 import { validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { redactSecrets } from "@/shared/redaction";
@@ -946,7 +946,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             }
 
             const mem = process.memoryUsage().heapUsed;
-            const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
+            const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || DEFAULT_MAX_HEAP_BYTES;
             if (mem > maxHeapBytes) {
               coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Memory budget reached" });
               skippedByReason.limitReached += 1;

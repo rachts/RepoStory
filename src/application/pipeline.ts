@@ -24,7 +24,7 @@ export interface AnalysisRunOptions {
   files?: RepositoryFile[] | AsyncIterable<RepositoryFile>;
   onProgress?: (progress: { stage: AnalysisResult["stage"]; progress: number; message: string }) => void;
   cacheStore?: import("@/application/cache/cache-store").CacheStore;
-  parseSourceFile?: (fileName: string, content: string) => void;
+  parseSourceFile?: (fileName: string, content: string) => void | Promise<void>;
 }
 
 function fileBytes(file: RepositoryFile): number {
@@ -266,18 +266,24 @@ export async function runAnalysis(
     const rawFiltered = filterFiles(rawFiles, limits, budget);
     budget.check();
 
+    const AST_EVENT_LOOP_YIELD_INTERVAL = 10;
     const parseSource = options.parseSourceFile ?? ((fileName: string, content: string) => {
       ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true);
     });
 
     const files: RepositoryFile[] = [];
     const parseFailures: string[] = [];
+    let parsedCount = 0;
     for (const file of rawFiltered) {
       budget.check();
       if (file.content && /\.(tsx?|jsx?|mts|cts)$/i.test(file.path)) {
         try {
-          parseSource(file.path, file.content);
+          await parseSource(file.path, file.content);
           files.push(file);
+          parsedCount += 1;
+          if (parsedCount % AST_EVENT_LOOP_YIELD_INTERVAL === 0) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
         } catch (parseErr) {
           logger.warn({ path: file.path, err: parseErr }, "Failed to parse AST for file, skipping");
           parseFailures.push(file.path);

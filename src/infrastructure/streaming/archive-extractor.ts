@@ -3,7 +3,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import tar from "tar-stream";
 import type { RepositoryFile } from "@/domain/repository";
-import type { AnalysisLimits, AnalysisBudget } from "@/shared/limits";
+import { DEFAULT_LIMITS, DEFAULT_MAX_HEAP_BYTES, type AnalysisLimits, type AnalysisBudget } from "@/shared/limits";
 import type { CacheStore } from "@/application/cache/cache-store";
 import { decodeFileBuffer, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
 import { AppError } from "@/domain/errors";
@@ -354,7 +354,7 @@ export async function extractRepositoryArchive(
         budget?.check();
 
         const mem = process.memoryUsage().heapUsed;
-        const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
+        const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || DEFAULT_MAX_HEAP_BYTES;
         if (mem > maxHeapBytes) {
           coverageDetails.push({ path: relativePath, reason: "limit-reached", details: "Memory budget reached" });
           skippedByReason.limitReached += 1;
