@@ -117,6 +117,7 @@ export interface AnalysisJobRecord {
   expiresAt: string;
   retryCount: number;
   explanationRequested: boolean;
+  heartbeatAt?: string;
   cancellationRequested?: boolean;
   error?: AnalysisJobError;
   coverage?: AnalysisCoverage;
@@ -192,6 +193,8 @@ export interface AnalysisError {
     | "INVALID_BRANCH"
     | "ANALYSIS_TIMEOUT"
     | "ARCHIVE_DOWNLOAD_STALLED"
+    | "JOB_STALLED"
+    | "JOB_EXPIRED"
     | "ANALYSIS_STORAGE_UNAVAILABLE"
     | "ANALYSIS_FAILED"
     | "CANCELLED";

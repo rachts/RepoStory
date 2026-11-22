@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { analysisRepository } from "@/composition/container";
+import { analysisRepository, jobQueue } from "@/composition/container";
 import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { jsonResponse, inferErrorStage, inferErrorHint } from "@/shared/http";
 import { redactPathValues } from "@/shared/redaction";
@@ -16,8 +16,21 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   }
 
   await analysisRepository.markExpiredJobs();
+  if (analysisRepository.recoverStuckJobs) {
+    await analysisRepository.recoverStuckJobs();
+  }
   const job = await analysisRepository.getJob(jobId, identity.value.ownerId);
   if (!job) return jsonResponse({ error: { code: "JOB_NOT_FOUND", message: "Analysis job not found.", retryable: false } }, { status: 404 });
+
+  // Detect stuck jobs in fetching, analyzing, or explaining (older than 2 minutes without heartbeat)
+  const isStalledCandidate =
+    job.status === "fetching" || job.status === "analyzing" || job.status === "explaining";
+
+  const STALLED_TIMEOUT_MS = 2 * 60 * 1000; // 2 minutes
+  const lastHeartbeatTime = job.heartbeatAt
+    ? new Date(job.heartbeatAt).getTime()
+    : new Date(job.updatedAt || job.createdAt).getTime();
+  const isStalled = isStalledCandidate && !isNaN(lastHeartbeatTime) && Date.now() - lastHeartbeatTime > STALLED_TIMEOUT_MS;
 
   // Detect stale jobs stuck in validating-input or queued state (older than 5 minutes)
   const isStaleCandidate =
@@ -32,7 +45,54 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   const isStale = isStaleCandidate && !isNaN(lastUpdatedTime) && Date.now() - lastUpdatedTime > STALE_TIMEOUT_MS;
 
   let effectiveJob = job;
-  if (isStale) {
+  if (isStalled) {
+    const stalledMessage = "Analysis worker stopped responding";
+    const stalledError = {
+      code: "JOB_STALLED",
+      stage: "analyze" as const,
+      reason: "The background analysis worker stopped reporting heartbeats.",
+      hint: "You can retry this analysis now.",
+      message: stalledMessage,
+      retryable: true,
+    };
+
+    const updated = await analysisRepository.updateJob(
+      jobId,
+      {
+        status: "failed",
+        stage: "completed",
+        progress: 100,
+        message: stalledMessage,
+        error: stalledError,
+        updatedAt: new Date().toISOString(),
+      },
+      identity.value.ownerId,
+    );
+
+    effectiveJob = updated ?? {
+      ...job,
+      status: "failed",
+      stage: "completed",
+      progress: 100,
+      message: stalledMessage,
+      error: stalledError,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      const queueItem = await jobQueue.get(jobId);
+      if (queueItem && queueItem.status === "running") {
+        await jobQueue.fail(jobId, queueItem.workerId ?? "stalled-sweeper", {
+          code: "JOB_STALLED",
+          stage: "analyze",
+          message: stalledMessage,
+          retryable: true,
+        });
+      }
+    } catch {
+      // Ignore queue error if in-memory queue or not queued
+    }
+  } else if (isStale) {
     const timeoutMessage = "Job timed out during validation. The worker may be offline or crashed.";
     const timeoutError = {
       code: "VALIDATION_TIMEOUT",

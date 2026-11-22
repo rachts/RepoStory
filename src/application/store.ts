@@ -135,11 +135,44 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     for (const [jobId, job] of this.durableJobs) {
       if (job.status === "expired" || job.status === "cancelled" || job.status === "failed" || job.status === "completed") continue;
       if (new Date(job.expiresAt).getTime() > now) continue;
-      const expired: DurableAnalysisJob = { ...job, status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: false } };
+      const expired: DurableAnalysisJob = { ...job, status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: true } };
       this.durableJobs.set(jobId, expired);
       count += 1;
     }
     return count;
+  }
+
+  public async recoverStuckJobs(now = Date.now(), timeoutMs = 120_000): Promise<DurableAnalysisJob[]> {
+    const recovered: DurableAnalysisJob[] = [];
+    for (const [jobId, job] of this.durableJobs) {
+      if (job.status !== "fetching" && job.status !== "analyzing" && job.status !== "explaining") {
+        continue;
+      }
+      const lastActivityTime = job.heartbeatAt
+        ? new Date(job.heartbeatAt).getTime()
+        : new Date(job.updatedAt || job.createdAt).getTime();
+      if (!isNaN(lastActivityTime) && now - lastActivityTime > timeoutMs) {
+        const failed: DurableAnalysisJob = {
+          ...job,
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: "Analysis worker stopped responding",
+          error: {
+            code: "JOB_STALLED",
+            stage: "analyze",
+            message: "Analysis worker stopped responding",
+            reason: "The background analysis worker stopped reporting heartbeats.",
+            hint: "You can retry this analysis now.",
+            retryable: true,
+          },
+          updatedAt: new Date(now).toISOString(),
+        };
+        this.durableJobs.set(jobId, failed);
+        recovered.push(structuredClone(failed));
+      }
+    }
+    return recovered;
   }
 
   public async deleteExpiredJobs(now = Date.now()): Promise<number> {
