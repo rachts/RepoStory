@@ -16,6 +16,7 @@ export const DEFAULT_STORE_LIMITS = {
   maxAnalyses: 100,
   ttlMs: 60 * 60 * 1000,
 } as const;
+export const DEFAULT_MAX_HEAP_BYTES = 350 * 1024 * 1024;
 export type AnalysisLimits = {
   maxFiles: number;
   maxFileBytes: number;
