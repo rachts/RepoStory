@@ -2,6 +2,7 @@ import type { AnalysisError, AnalysisResult, AnalysisCoverage, DiagramAvailabili
 import type { RepositoryFile, RepositoryProvider, RepositoryReference } from "@/domain/repository";
 import { repositoryStructureDiagram, systemOverviewDiagram } from "@/analysis/diagrams";
 import { analyzeDirectories, analyzeEntryPoints, analyzePhase3, analyzeTechnologies, apiRequestFlowDiagram, authenticationFlowDiagram, generateArchitectureStory } from "@/analysis";
+import { mergeDiagramEdits } from "@/application/diagram-edits";
 import { filterFiles } from "@/analysis/filter-files";
 import { AppError } from "@/domain/errors";
 import type { AnalysisStore } from "@/application/store";
@@ -200,27 +201,59 @@ export async function runAnalysis(
     }
   }
 
+  const handleCacheHit = async (
+    cached: AnalysisResult,
+    commitSha: string,
+    repositoryOverride?: typeof job.repository,
+  ): Promise<Result<AnalysisResult, AppError>> => {
+    let editedDiagramsByType: Record<string, import("@/domain/diagram").Diagram> | null = null;
+    if (cacheStore) {
+      try {
+        const editsKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:diagram-edits`;
+        editedDiagramsByType = (await cacheStore.get<Record<string, import("@/domain/diagram").Diagram>>(editsKey)) ?? null;
+      } catch {
+        // Fall back to unedited cached diagrams
+      }
+    }
+
+    const remappedDiagrams = (cached.diagrams ?? []).map((diagram) => {
+      let finalDiagram = diagram;
+      if (editedDiagramsByType && editedDiagramsByType[diagram.type]) {
+        finalDiagram = mergeDiagramEdits(diagram, editedDiagramsByType[diagram.type]!);
+      }
+      return {
+        ...finalDiagram,
+        id: opaqueId("diagram"),
+        analysisId: id,
+      };
+    });
+
+    job = {
+      ...cached,
+      id,
+      status: "completed",
+      stage: "completed",
+      progressPercent: 100,
+      diagrams: remappedDiagrams,
+      diagramIds: remappedDiagrams.map((d) => d.id),
+      createdAt: started,
+      completedAt: nowIso(),
+      ...(repositoryOverride ? { repository: repositoryOverride } : {}),
+    };
+    for (const diagram of remappedDiagrams) {
+      store.saveDiagram(diagram);
+    }
+    progress("completed", 100, "Analysis complete (cached)");
+    job.status = "completed";
+    store.save(job);
+    return ok(job);
+  };
+
   if (resolvedCommitSha && cacheStore) {
     const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
     const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
     if (cached) {
-      job = {
-        ...cached,
-        id,
-        status: "completed",
-        stage: "completed",
-        progressPercent: 100,
-        diagrams: (cached.diagrams ?? []).map((diagram) => ({
-          ...diagram,
-          analysisId: id,
-        })),
-        createdAt: started,
-        completedAt: nowIso(),
-      };
-      progress("completed", 100, "Analysis complete (cached)");
-      job.status = "completed";
-      store.save(job);
-      return ok(job);
+      return await handleCacheHit(cached, resolvedCommitSha);
     }
   }
 
@@ -254,24 +287,7 @@ export async function runAnalysis(
         const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
         const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
         if (cached) {
-          job = {
-            ...cached,
-            id,
-            status: "completed",
-            stage: "completed",
-            progressPercent: 100,
-            diagrams: (cached.diagrams ?? []).map((diagram) => ({
-              ...diagram,
-              analysisId: id,
-            })),
-            repository: snapshot.value.repository,
-            createdAt: started,
-            completedAt: nowIso(),
-          };
-          progress("completed", 100, "Analysis complete (cached)");
-          job.status = "completed";
-          store.save(job);
-          return ok(job);
+          return await handleCacheHit(cached, resolvedCommitSha, snapshot.value.repository);
         }
       }
 

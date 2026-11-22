@@ -255,7 +255,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
 
   public async saveAnalysisDiagram(diagram: Diagram, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(diagram.analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || (ownerId && job.ownerId !== ownerId))) return;
     this.saveDiagram(diagram);
   }
 

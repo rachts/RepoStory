@@ -329,9 +329,10 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveAnalysisDiagram(diagram: Diagram, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(diagram.analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested) return;
-    const existing = await this.diagramRow(diagram.id, job.ownerId);
-    await this.request("saving diagram", "repo_story_diagrams", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ diagram_id: diagram.id, analysis_id: diagram.analysisId, owner_id: job.ownerId, diagram: redactPathValues(diagram), original_diagram: existing?.original_diagram ?? redactPathValues(diagram), updated_at: nowIso() }) });
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return;
+    const effectiveOwner = job?.ownerId ?? ownerId ?? "system";
+    const existing = await this.diagramRow(diagram.id, effectiveOwner);
+    await this.request("saving diagram", "repo_story_diagrams", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ diagram_id: diagram.id, analysis_id: diagram.analysisId, owner_id: effectiveOwner, diagram: redactPathValues(diagram), original_diagram: existing?.original_diagram ?? redactPathValues(diagram), updated_at: nowIso() }) });
   }
 
   public async getAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined> {
