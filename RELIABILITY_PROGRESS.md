@@ -16,7 +16,7 @@ Branch: `fix/analysis-reliability`
 | **Fix 9** | Pre-snapshot cache check in `pipeline.ts` with ref lookup | Verified | `347aa73` | Added resolveCommitSha, pre-snapshot cache check before getSnapshot; verified 0 tree/archive calls on cache hit in tests/unit/pre-snapshot-cache-lookup.test.ts |
 | **Fix 10** | Persist remapped diagrams & preserve edits on cache hit | Verified | `6efc86b` | Remapped unique diagram IDs, saved to store & repository on cache hit, merged user edits from cacheStore, verified /api/analysis/[id]/diagrams > 0; screenshot: 15-phase4-cache-hit-diagrams.png |
 | **Fix 11** | Jittered rate-limit backoff in GitHub dispatch without 100ms cap | Verified | `6e6f078` | Removed 100ms artificial cap, implemented full retry-after backoff with jitter, fast-failed with GITHUB_RATE_LIMITED on budget overflow; tested in tests/unit/github-rate-limit-backoff.test.ts |
-| **Fix 12** | Atomic `createOrReuseJob` with unique constraint / ON CONFLICT, event wait in `waitForIdle` | Todo | | |
+| **Fix 12** | Atomic `createOrReuseJob` with unique constraint / ON CONFLICT, event wait in `waitForIdle` | Verified | `8546c80` | Created migration 007 partial unique index on active jobs, handled 409 conflict atomically, replaced sleep(0) busy-spin with event-driven idleWaiters; tested in tests/unit/atomic-job-dedup.test.ts |
 | **Fix 13** | Last worker heartbeat in job status response, UI worker offline indicator | Todo | | |
 | **Fix 14** | Frontend `diagramAvailability` reasons & structure fallback diagram | Todo | | |
 | **Regression** | Final full-suite pass, multi-scenario browser verification & deployment runbook | Todo | | |
@@ -83,5 +83,11 @@ Branch: `fix/analysis-reliability`
   - Checked backoff duration against active analysis budget: if backoff exceeds remaining analysis budget, fails fast immediately with retryable `GITHUB_RATE_LIMITED` AppError rather than sleeping past the deadline.
   - Added support for abort signal cancellation during backoff sleep.
   - Added unit tests in `tests/unit/github-rate-limit-backoff.test.ts` verifying full backoff without 100ms cap, budget overflow fail-fast, and signal cancellation.
+- **Fix 12**:
+  - Added PostgreSQL migration `supabase/migrations/007_atomic_jobs.sql` creating partial unique index `repo_story_jobs_active_unique_idx` on `(owner_id, cache_key)` for active jobs (`status in ('queued', 'fetching', 'analyzing', 'explaining')`).
+  - Added race condition handling in `src/infrastructure/jobs/supabase-analysis-job-repository.ts` to re-query the winning active job on unique constraint conflict, guaranteeing atomic deduplication.
+  - Added in-flight promise deduplication in `src/application/store.ts` for atomic deduplication in memory.
+  - Replaced `sleep(0)` busy loop in `src/application/jobs/analysis-job-runner.ts` `waitForIdle` with an event-driven `idleWaiters` notification system that resolves cleanly without burning CPU ticks.
+  - Verified with unit tests in `tests/unit/atomic-job-dedup.test.ts`.
 
 
