@@ -186,6 +186,27 @@ export async function startMockGitHubServer(options: MockServerOptions = {}): Pr
         return;
       }
 
+      // Scenario B2: Slow download with Content-Length header (for progress 45 -> 60 check)
+      if (pathname.includes("slow-length")) {
+        res.writeHead(200, {
+          "Content-Type": "application/x-gzip",
+          "Content-Length": String(tarballBuffer.length),
+        });
+        const chunkSize = Math.max(10, Math.floor(tarballBuffer.length / 8));
+        let offset = 0;
+        const interval = setInterval(() => {
+          if (offset < tarballBuffer.length) {
+            const next = tarballBuffer.subarray(offset, offset + chunkSize);
+            res.write(next);
+            offset += chunkSize;
+          } else {
+            clearInterval(interval);
+            res.end();
+          }
+        }, 250);
+        return;
+      }
+
       // Scenario C: Chunked tarball with no Content-Length
       if (pathname.includes("chunked") || pathname.includes("no-length")) {
         res.writeHead(200, {
