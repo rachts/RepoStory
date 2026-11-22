@@ -3,7 +3,7 @@ import { analysisRepository, jobQueue, analysisJobRunner } from "@/composition/c
 import { resolveRequestIdentity } from "@/application/jobs/job-identity";
 import { jsonResponse, inferErrorStage, inferErrorHint } from "@/shared/http";
 import { redactPathValues } from "@/shared/redaction";
-import { shouldRunInProcessJobs } from "@/app/api/analyze/route";
+import { shouldRunInProcessJobs } from "@/application/jobs/job-execution-mode";
 
 interface RouteContext { params: Promise<{ jobId: string }> }
 

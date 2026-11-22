@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { DEFAULT_LIMITS } from "@/shared/limits";
-import { maxDuration, ANALYSIS_ROUTE_MAX_DURATION_SECONDS } from "@/app/api/analyze/route";
+import { maxDuration } from "@/app/api/analyze/route";
+import { ANALYSIS_ROUTE_MAX_DURATION_SECONDS } from "@/application/jobs/job-execution-mode";
 
 describe("Execution Duration and Analysis Limits Headroom", () => {
   it("enforces maxAnalysisMs is strictly less than maxDuration with at least 5s headroom", () => {
