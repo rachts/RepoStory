@@ -183,8 +183,8 @@ export class AnalysisJobRunner {
   private async execute(jobId: string): Promise<void> {
     console.log(`[Worker] Starting validation for job ${jobId}`);
     const initial = await this.repository.getJob(jobId);
-    if (!initial || initial.status === "completed" || initial.status === "cancelled" || initial.status === "expired") {
-      console.log(`[Worker] Job ${jobId} not found, already completed, cancelled, or expired.`);
+    if (!initial || initial.status === "completed" || initial.status === "cancelled" || initial.status === "expired" || initial.status === "failed") {
+      console.log(`[Worker] Job ${jobId} not found, already completed, cancelled, expired, or failed.`);
       return;
     }
     const controller = new AbortController();
