@@ -316,8 +316,8 @@ describe("RepoAnalysis diagram navigation", () => {
 
     render(<RepoAnalysis analysisId="job-timeout-test" />);
 
-    await screen.findByText("Taking longer than expected.");
-    expect(screen.getByText(/3-minute timeout/)).toBeInTheDocument();
+    await screen.findByText("Analysis timed out. Try again");
+    expect(screen.getByText(/Analysis timed out. Try again/)).toBeInTheDocument();
 
     const retryButton = screen.getByRole("button", { name: "Retry analysis" });
     expect(retryButton).toBeInTheDocument();
@@ -330,6 +330,31 @@ describe("RepoAnalysis diagram navigation", () => {
         expect.objectContaining({ method: "POST" })
       );
     });
+
+    nowSpy.mockRestore();
+  });
+
+  it("supports configurable polling duration via maxPollingDurationMs prop", async () => {
+    let now = 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+
+    const pendingJob = {
+      jobId: "job-prop-timeout",
+      status: "analyzing",
+      stage: "analyzing-ast",
+      progress: 50,
+      message: "Parsing files",
+    };
+
+    fetchMock.mockImplementation(async () => {
+      now += 20_000;
+      return { ok: true, json: async () => pendingJob };
+    });
+
+    render(<RepoAnalysis analysisId="job-prop-timeout" maxPollingDurationMs={15_000} />);
+
+    await screen.findByText("Analysis timed out. Try again");
+    expect(screen.getByRole("button", { name: "Retry analysis" })).toBeInTheDocument();
 
     nowSpy.mockRestore();
   });
