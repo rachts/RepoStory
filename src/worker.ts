@@ -63,6 +63,28 @@ export async function processJob(item: JobQueueItem): Promise<void> {
   activeJobIds.add(item.jobId);
   console.log(`[Worker] Starting validation for job ${item.jobId}`);
   try {
+    const existingJob = await analysisRepository.getJob(item.jobId);
+    if (existingJob?.status === "completed") {
+      console.log(`[Worker] Job ${item.jobId} already completed, clearing queue item.`);
+      await jobQueue.complete(item.jobId, workerId);
+      return;
+    }
+    if (existingJob?.status === "cancelled") {
+      console.log(`[Worker] Job ${item.jobId} was cancelled, cancelling queue item.`);
+      await jobQueue.cancel(item.jobId);
+      return;
+    }
+    if (existingJob?.status === "failed" || existingJob?.status === "expired") {
+      console.log(`[Worker] Job ${item.jobId} already ${existingJob.status}, finalizing queue item.`);
+      await jobQueue.fail(item.jobId, workerId, {
+        code: existingJob.error?.code || "JOB_FAILED",
+        stage: existingJob.stage,
+        message: existingJob.message || `Job already in terminal state ${existingJob.status}.`,
+        retryable: false,
+      });
+      return;
+    }
+
     await analysisJobRunner.runNow(item.jobId);
     console.log(`[Worker] Validation complete for job ${item.jobId}`);
 
