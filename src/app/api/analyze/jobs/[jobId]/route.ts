@@ -128,6 +128,22 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
     }
   }
 
+  const isTerminal =
+    effectiveJob.status === "completed" ||
+    effectiveJob.status === "failed" ||
+    effectiveJob.status === "cancelled" ||
+    effectiveJob.status === "expired";
+
+  const WORKER_OFFLINE_THRESHOLD_MS = 40_000;
+  let workerStatus: "active" | "offline" | "idle" = "idle";
+  if (!isTerminal) {
+    const lastHeartbeatMs = effectiveJob.heartbeatAt
+      ? new Date(effectiveJob.heartbeatAt).getTime()
+      : new Date(effectiveJob.updatedAt || effectiveJob.createdAt).getTime();
+    const isOffline = !isNaN(lastHeartbeatMs) && Date.now() - lastHeartbeatMs > WORKER_OFFLINE_THRESHOLD_MS;
+    workerStatus = isOffline ? "offline" : "active";
+  }
+
   return jsonResponse(redactPathValues({
     jobId: effectiveJob.jobId,
     analysisId: effectiveJob.analysisId,
@@ -142,6 +158,8 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
     expiresAt: effectiveJob.expiresAt,
     retryCount: effectiveJob.retryCount,
     explanationRequested: effectiveJob.explanationRequested,
+    heartbeatAt: effectiveJob.heartbeatAt ?? null,
+    workerStatus,
     cancellationRequested: effectiveJob.cancellationRequested ?? false,
     error: effectiveJob.error
       ? {

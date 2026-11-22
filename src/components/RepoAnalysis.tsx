@@ -392,7 +392,13 @@ export function RepoAnalysis({
           action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
         />
       ) : (
-        <ProgressState progress={job?.progress ?? 0} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />
+        <ProgressState
+          progress={job?.progress ?? 0}
+          stage={job?.stage ?? "validating-input"}
+          message={job?.message}
+          action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null}
+          workerStatus={job?.workerStatus}
+        />
       )}
     </main>;
   }
@@ -587,7 +593,7 @@ function VisibilityButton({ visible, onClick }: { visible: boolean; onClick: () 
 function EvidenceSection({ evidence }: { evidence: Array<{ id: string; filePath: string; lineStart?: number; reason: string; excerpt?: string }> }): React.JSX.Element { return <section className="evidence-section"><div><p className="eyebrow"><span className="eyebrow-line" /> Evidence</p><h3>Why this map exists</h3></div><div className="evidence-panel">{evidence.length ? evidence.map((item) => <article key={item.id}><strong>{item.filePath}{item.lineStart ? `:${item.lineStart}` : ""}</strong><p>{item.reason}</p>{item.excerpt ? <code>{item.excerpt}</code> : null}</article>) : <p className="muted">No source references were collected.</p>}</div></section>; }
 function AvailabilityList({ availability }: { availability?: AnalysisJob["diagramAvailability"] }): React.JSX.Element | null { const unavailable = availability?.filter((item) => !item.available) ?? []; return unavailable.length ? <div className="availability-list" aria-label="Diagram availability reasons">{unavailable.map((item) => <p key={item.type}><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><span>{item.reason ?? "Not enough evidence to generate this diagram."}</span></p>)}</div> : null; }
 function StateCard({ title, message, action, details }: { title: string; message: string; action?: React.ReactNode; details?: React.ReactNode }): React.JSX.Element { return <section className="state-card page-width" role="status" aria-live="polite"><span className="state-symbol" aria-hidden="true">!</span><h1>{title}</h1><p>{message}</p>{details}{action}</section>; }
-function ProgressState({ progress, stage, message, action }: { progress: number; stage: string; message?: string; action?: React.ReactNode }): React.JSX.Element {
+function ProgressState({ progress, stage, message, action, workerStatus }: { progress: number; stage: string; message?: string; action?: React.ReactNode; workerStatus?: "active" | "offline" | "idle" }): React.JSX.Element {
   const labels: Record<string, string> = {
     validating: "Checking the repository URL",
     "validating-input": "Checking the repository URL",
@@ -615,6 +621,12 @@ function ProgressState({ progress, stage, message, action }: { progress: number;
       <p className="eyebrow"><span className="eyebrow-line" /> Building your story</p>
       <h1>{message || labels[stage] || "Reading your repository"}<span className="animated-dots">…</span></h1>
       <p>We’re tracing the important paths so the result stays useful, not noisy.</p>
+      {workerStatus === "offline" ? (
+        <div className="worker-offline-indicator" data-testid="worker-offline-indicator" role="status">
+          <span className="worker-offline-indicator-dot" aria-hidden="true" />
+          <span>Worker offline — no heartbeat received recently</span>
+        </div>
+      ) : null}
       <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safeProgress)}>
         <span style={{ width: `${Math.max(6, safeProgress)}%` }} />
       </div>

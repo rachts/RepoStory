@@ -28,6 +28,7 @@ export class JobWorker {
   private activeJobs = new Set<string>();
   private loopPromise?: Promise<void>;
   private lastStuckJobCheck = 0;
+  private idleWaiters = new Set<() => void>();
 
   public constructor(
     queue: JobQueue,
@@ -48,6 +49,11 @@ export class JobWorker {
 
   public get activeCount(): number {
     return this.activeJobs.size;
+  }
+
+  public async waitForIdle(): Promise<void> {
+    if (this.activeJobs.size === 0) return;
+    await new Promise<void>((resolve) => this.idleWaiters.add(resolve));
   }
 
   public start(): void {
@@ -75,6 +81,10 @@ export class JobWorker {
     this.activeJobs.add(claimed.jobId);
     void this.processJob(claimed).finally(() => {
       this.activeJobs.delete(claimed.jobId);
+      if (this.activeJobs.size === 0) {
+        for (const waiter of this.idleWaiters) waiter();
+        this.idleWaiters.clear();
+      }
     });
     return claimed;
   }
@@ -92,6 +102,10 @@ export class JobWorker {
             this.activeJobs.add(item.jobId);
             void this.processJob(item).finally(() => {
               this.activeJobs.delete(item.jobId);
+              if (this.activeJobs.size === 0) {
+                for (const waiter of this.idleWaiters) waiter();
+                this.idleWaiters.clear();
+              }
             });
             continue;
           }
