@@ -186,7 +186,9 @@ async function startupSweep(): Promise<void> {
   }
 }
 
-void startupSweep();
+void startupSweep().catch((err) => {
+  console.error(`[RepoStory Worker ${workerId}] Startup sweep uncaught error:`, err);
+});
 worker.start();
 
 const shutdown = async (signal: string) => {
@@ -196,5 +198,13 @@ const shutdown = async (signal: string) => {
   process.exit(0);
 };
 
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM").catch((err) => {
+    console.error(`[RepoStory Worker ${workerId}] Error during SIGTERM shutdown:`, err);
+  });
+});
+process.on("SIGINT", () => {
+  void shutdown("SIGINT").catch((err) => {
+    console.error(`[RepoStory Worker ${workerId}] Error during SIGINT shutdown:`, err);
+  });
+});

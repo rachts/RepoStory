@@ -157,7 +157,7 @@ export class AnalysisJobRunner {
     this.drainScheduled = true;
     queueMicrotask(() => {
       this.drainScheduled = false;
-      void this.drain();
+      void this.drain().catch(() => {});
     });
   }
 
@@ -166,7 +166,7 @@ export class AnalysisJobRunner {
       const jobId = this.queued.values().next().value as string | undefined;
       if (!jobId) break;
       this.queued.delete(jobId);
-      void this.runWithSlot(jobId).finally(() => this.scheduleDrain());
+      void this.runWithSlot(jobId).catch(() => {}).finally(() => this.scheduleDrain());
     }
   }
 
@@ -200,7 +200,7 @@ export class AnalysisJobRunner {
 
     while (true) {
       const current = await this.repository.getJob(jobId);
-      if (!current || current.status === "completed" || current.status === "cancelled" || current.cancellationRequested) {
+      if (!current || current.status === "completed" || current.status === "failed" || current.status === "cancelled" || current.cancellationRequested) {
         jobTokenRegistry.delete(jobId);
         return;
       }
@@ -234,7 +234,7 @@ export class AnalysisJobRunner {
           token,
           onProgress: (progress) => {
             const mapped = progressFor(progress);
-            void this.repository.updateJob(jobId, { ...mapped, analysisId, heartbeatAt: nowIso(), updatedAt: nowIso() });
+            void this.repository.updateJob(jobId, { ...mapped, analysisId, heartbeatAt: nowIso(), updatedAt: nowIso() }).catch(() => {});
           },
         });
       } finally {
@@ -304,6 +304,12 @@ export class AnalysisJobRunner {
         id: analysisId,
         diagrams: (result.value.diagrams ?? scratchStore.listDiagrams(analysisId)).map((d) => ({ ...d, analysisId })),
       };
+      const preSaveJob = await this.repository.getJob(jobId, current.ownerId);
+      if (!preSaveJob || preSaveJob.status === "failed" || preSaveJob.status === "cancelled" || preSaveJob.cancellationRequested) {
+        jobTokenRegistry.delete(jobId);
+        return;
+      }
+
       await this.repository.updateJob(jobId, { analysisId, status: "analyzing", stage: "storing-result", progress: 92, message: "Saving the deterministic analysis result.", coverage: analysisResult.coverage, updatedAt: nowIso() });
       const persisted = await this.repository.saveAnalysisResult(analysisResult, current.ownerId);
       if (!persisted) {
@@ -314,7 +320,7 @@ export class AnalysisJobRunner {
 
       if (current.explanationRequested) await this.generateExplanation(jobId, current.ownerId, analysisResult);
       const finalJob = await this.repository.getJob(jobId, current.ownerId);
-      if (!finalJob || finalJob.status === "cancelled" || finalJob.cancellationRequested) {
+      if (!finalJob || finalJob.status === "failed" || finalJob.status === "cancelled" || finalJob.cancellationRequested) {
         jobTokenRegistry.delete(jobId);
         return;
       }

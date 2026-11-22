@@ -210,7 +210,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   public async saveAnalysisResult(result: AnalysisResult, ownerId?: string): Promise<boolean> {
     const job = [...this.durableJobs.values()].find((candidate) => candidate.analysisId === result.id || candidate.jobId === result.id);
     if (job && ownerId && job.ownerId !== ownerId) return false;
-    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return false;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested)) return false;
     this.save(result);
     if (job) this.durableJobs.set(job.jobId, structuredClone({ ...job, analysisId: result.id, updatedAt: nowIso() }));
     return true;
@@ -224,7 +224,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
 
   public async saveExplanation(analysisId: string, explanation: ProjectExplanation, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
+    if (!job || job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
     this.explanations.set(analysisId, structuredClone(redactPathValues(explanation)));
     this.explanationUnavailable.delete(analysisId);
     const result = this.jobs.get(analysisId);

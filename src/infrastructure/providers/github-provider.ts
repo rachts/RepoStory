@@ -333,13 +333,18 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     };
 
     const isTest = process.env.NODE_ENV === "test";
+    const testBaseUrl =
+      process.env.NODE_ENV !== "production" && process.env.GITHUB_API_BASE_URL
+        ? process.env.GITHUB_API_BASE_URL.replace(/\/+$/, "")
+        : undefined;
 
     this.octokit = new ResilientOctokit({
+      ...(testBaseUrl ? { baseUrl: testBaseUrl } : {}),
       request: {
         fetch: safeFetch,
       },
       throttle: {
-        enabled: !isTest,
+        enabled: !isTest && !testBaseUrl,
         onRateLimit: () => false,
         onSecondaryRateLimit: () => false,
       },
@@ -362,12 +367,30 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       budget?.check();
       this.circuitBreaker.check();
 
+      const testApiOrigin =
+        process.env.NODE_ENV !== "production" && process.env.GITHUB_API_BASE_URL
+          ? new URL(process.env.GITHUB_API_BASE_URL).origin.toLowerCase()
+          : null;
+      const testCodeloadOrigin =
+        process.env.NODE_ENV !== "production" && process.env.GITHUB_CODELOAD_BASE_URL
+          ? new URL(process.env.GITHUB_CODELOAD_BASE_URL).origin.toLowerCase()
+          : testApiOrigin;
+
       // Ensure the URL is valid and targets api.github.com, or codeload.github.com for archive
-      const isApiGithub = currentUrl.hostname.toLowerCase() === "api.github.com";
-      const isCodeload = currentUrl.hostname.toLowerCase() === "codeload.github.com";
+      const currentOrigin = currentUrl.origin.toLowerCase();
+      const isApiGithub =
+        currentUrl.hostname.toLowerCase() === "api.github.com" ||
+        (testApiOrigin !== null && currentOrigin === testApiOrigin);
+      const isCodeload =
+        currentUrl.hostname.toLowerCase() === "codeload.github.com" ||
+        (testCodeloadOrigin !== null && currentOrigin === testCodeloadOrigin);
+
+      const isProtocolPermitted =
+        currentUrl.protocol === "https:" ||
+        (testApiOrigin !== null && currentUrl.protocol === "http:");
 
       const isHostPermitted =
-        currentUrl.protocol === "https:" &&
+        isProtocolPermitted &&
         ((isApiGithub &&
           (currentUrl.pathname.startsWith("/repos/") ||
             currentUrl.pathname.startsWith("/repositories/") ||
@@ -503,9 +526,14 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         }
 
         const isRedirectAllowed =
-          locUrl.protocol === "https:" &&
+          (locUrl.protocol === "https:" ||
+            (testApiOrigin !== null && locUrl.protocol === "http:")) &&
           (locUrl.hostname.toLowerCase() === "api.github.com" ||
-            (stage === "archive" && locUrl.hostname.toLowerCase() === "codeload.github.com"));
+            (testApiOrigin !== null && locUrl.origin.toLowerCase() === testApiOrigin) ||
+            (stage === "archive" &&
+              (locUrl.hostname.toLowerCase() === "codeload.github.com" ||
+                (testCodeloadOrigin !== null &&
+                  locUrl.origin.toLowerCase() === testCodeloadOrigin))));
 
         if (!isRedirectAllowed) {
           throw new AppError({
@@ -888,7 +916,10 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             warnings.push(`Archive endpoint returned status ${archiveResponse.status}. Falling back to per-file fetch.`);
           }
         } catch (archiveError) {
-          if (archiveError instanceof AppError && archiveError.code === "ANALYSIS_TIMEOUT") {
+          if (
+            archiveError instanceof AppError &&
+            (archiveError.code === "ANALYSIS_TIMEOUT" || archiveError.code === "ARCHIVE_DOWNLOAD_STALLED")
+          ) {
             throw archiveError;
           }
           warnings.push(`Archive fetch failed: ${archiveError instanceof Error ? archiveError.message : "unknown error"}. Falling back to per-file fetch.`);
