@@ -80,11 +80,33 @@ RepoStory employs a decoupled serverless + persistent worker architecture:
   - Uses PostgreSQL `FOR UPDATE SKIP LOCKED` to safely claim jobs without race conditions or locks between multiple worker instances.
   - Heartbeat checks every 15 seconds to ensure active jobs are not marked stale.
 - **Environment variables**:
-  - `REPO_STORY_JOB_STORE=supabase`
-  - `REPO_STORY_QUEUE_MODE=supabase`
-  - `SUPABASE_URL=https://<project-ref>.supabase.co`
-  - `SUPABASE_SERVICE_ROLE_KEY=<service-role-key>`
-  - `GITHUB_TOKEN=<personal-access-token>` (optional server fallback pool)
+  - `REPO_STORY_JOB_STORE=supabase` (Required in production)
+  - `REPO_STORY_QUEUE_MODE=supabase` (Required in production)
+  - `REPO_STORY_CACHE_STORE=supabase` (Recommended in production)
+  - `SUPABASE_URL=https://<project-ref>.supabase.co` (Required)
+  - `SUPABASE_SECRET_KEY=<service-role-secret-key>` (Required, bypasses RLS; also accepts `SUPABASE_SERVICE_ROLE_KEY`)
+  - `GITHUB_TOKEN=<personal-access-token>` (Optional single token)
+  - `GITHUB_TOKENS=<token1,token2>` (Optional comma-separated token pool)
+  - `GROQ_API_KEY=<groq-api-key>` (Optional AI reasoning key)
+  - `REPO_STORY_TOKEN_ENCRYPTION_KEY=<key>` (Required for encrypted queue payload mode)
+  - `WORKER_CONCURRENCY=2` (Default 2, tune based on memory limits)
+  - `WORKER_POLL_INTERVAL_MS=1000` (Default 1000ms)
+  - `WORKER_HEARTBEAT_INTERVAL_MS=15000` (Default 15000ms)
+  - `WORKER_HEARTBEAT_TIMEOUT_MS=120000` (Default 120000ms)
+
+### Deployment Steps on Render
+
+1. **Database Readiness**: Ensure all migrations (`001_initial_schema.sql` through `004_durable_jobs.sql`) have been applied to your Supabase PostgreSQL instance.
+2. **Render Blueprint / Web Service**:
+   - Apply `render.yaml` as an infrastructure blueprint, or create a Web Service pointing to this repository.
+   - For `repostory-worker`, ensure `buildCommand` is `npm install && npm run build:worker` and `startCommand` is `npm run worker`.
+3. **Configure Environment Variables**:
+   - In the Render Dashboard under **Environment**, configure each variable marked with `sync: false` (`SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `GITHUB_TOKENS`, `REPO_STORY_TOKEN_ENCRYPTION_KEY`, etc.).
+   - Never commit actual secrets into `render.yaml`.
+4. **Health Check Verification**:
+   - Render will send HTTP GET requests to `/` on port 10000 (or `PORT`). Verify the worker responds with HTTP 200 `{"status": "healthy"}`.
+5. **Logs & Monitoring**:
+   - Inspect worker startup logs: verify `[RepoStory Worker] Starting worker worker-<pid>...`, successful startup sweep, and polling loop activation.
 
 ### C. Database & Job Store (Supabase)
 
