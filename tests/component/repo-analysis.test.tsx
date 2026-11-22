@@ -358,4 +358,23 @@ describe("RepoAnalysis diagram navigation", () => {
 
     nowSpy.mockRestore();
   });
+
+  it("renders worker offline indicator when job payload indicates workerStatus: 'offline'", async () => {
+    const offlineJob = {
+      jobId: "job-offline-test",
+      status: "analyzing",
+      stage: "analyzing-ast",
+      progress: 50,
+      message: "Parsing files",
+      workerStatus: "offline",
+      heartbeatAt: new Date(Date.now() - 50_000).toISOString(),
+    };
+
+    fetchMock.mockResolvedValue({ ok: true, json: async () => offlineJob });
+
+    render(<RepoAnalysis analysisId="job-offline-test" />);
+
+    await screen.findByTestId("worker-offline-indicator");
+    expect(screen.getByText(/Worker offline — no heartbeat received recently/)).toBeInTheDocument();
+  });
 });

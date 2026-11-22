@@ -118,6 +118,7 @@ export interface AnalysisJobRecord {
   retryCount: number;
   explanationRequested: boolean;
   heartbeatAt?: string;
+  workerStatus?: "active" | "offline" | "idle";
   cancellationRequested?: boolean;
   error?: AnalysisJobError;
   coverage?: AnalysisCoverage;

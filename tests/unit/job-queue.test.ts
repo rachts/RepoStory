@@ -203,6 +203,7 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
 
     // Wait for async execution
     await runner.waitForIdle();
+    await worker.waitForIdle();
 
     const completed = await store.getJob("job-worker-1", "session-1");
     expect(completed?.status).toBe("completed");
