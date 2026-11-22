@@ -141,7 +141,8 @@ export async function runAnalysis(
     createdAt: started,
   };
   store.save(job);
-  const signal = options.signal ?? AbortSignal.timeout(limits.maxAnalysisMs);
+  const timeoutSignal = AbortSignal.timeout(limits.maxAnalysisMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const budget = options.budget ?? createAnalysisBudget(limits.maxAnalysisMs, options.now, signal);
   const progress = (stage: AnalysisResult["stage"], progressPercent: number, message: string): void => {
     job = { ...job, stage, progressPercent, status: "running" };
