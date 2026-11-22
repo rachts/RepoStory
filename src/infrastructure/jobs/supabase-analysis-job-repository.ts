@@ -151,7 +151,17 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   public async createOrReuseJob(job: AnalysisJobRecord): Promise<{ job: AnalysisJobRecord; created: boolean }> {
     const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
     if (reusable) return { job: reusable, created: false };
-    return { job: await this.createJob(job), created: true };
+
+    try {
+      const created = await this.createJob(job);
+      return { job: created, created: true };
+    } catch (err: unknown) {
+      // If a concurrent request raced and inserted an active job for the same owner and cache key,
+      // re-query and return the existing active job instead of throwing or duplicating.
+      const raced = await this.findReusableJob(job.cacheKey, job.ownerId);
+      if (raced) return { job: raced, created: false };
+      throw err;
+    }
   }
 
   public async getJob(jobId: string, ownerId?: string): Promise<AnalysisJobRecord | undefined> {
