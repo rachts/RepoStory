@@ -37,56 +37,15 @@ initSentry();
 const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
 logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
-const activeJobIds = new Set<string>();
-let isCrashing = false;
+import { activeJobIds, failActiveJobsOnCrash } from "@/application/jobs/worker-crash-handler";
 
-async function handleFatalCrash(type: string, error: unknown): Promise<void> {
-  if (isCrashing) return;
-  isCrashing = true;
-  console.error(`[RepoStory Worker] Fatal ${type}:`, error);
-
-  for (const jobId of activeJobIds) {
-    try {
-      const crashMessage = `Worker crashed unexpectedly (${type}): ${error instanceof Error ? error.message : String(error)}`;
-      await analysisRepository.updateJob(jobId, {
-        status: "failed",
-        stage: "completed",
-        progress: 100,
-        message: crashMessage,
-        error: {
-          code: "WORKER_CRASHED",
-          stage: "analyze",
-          reason: crashMessage,
-          hint: "The worker crashed. Retrying the analysis may succeed.",
-          message: crashMessage,
-          retryable: true,
-          details: error instanceof Error ? { name: error.name, ...(error.stack ? { stack: error.stack } : {}) } : undefined,
-        },
-        updatedAt: new Date().toISOString(),
-      });
-      await jobQueue.fail(jobId, workerId, {
-        code: "WORKER_CRASHED",
-        stage: "analyze",
-        reason: crashMessage,
-        hint: "The worker crashed. Retrying the analysis may succeed.",
-        message: crashMessage,
-        retryable: true,
-      });
-    } catch (cleanupErr) {
-      console.error(`[RepoStory Worker] Failed to update job ${jobId} during fatal crash:`, cleanupErr);
-    }
-  }
-
-  process.exit(1);
-}
-
-// Process-level guards against silent termination: log, fail active jobs, and exit non-zero for orchestrator restart
+// Process-level guards against silent termination: await mark-failed write before exit(1)
 process.on("unhandledRejection", (reason) => {
-  void handleFatalCrash("unhandledRejection", reason);
+  void failActiveJobsOnCrash("unhandledRejection", reason, analysisRepository, jobQueue, workerId);
 });
 
 process.on("uncaughtException", (error) => {
-  void handleFatalCrash("uncaughtException", error);
+  void failActiveJobsOnCrash("uncaughtException", error, analysisRepository, jobQueue, workerId);
 });
 
 const pollIntervalMs = process.env.WORKER_POLL_INTERVAL_MS ? Number(process.env.WORKER_POLL_INTERVAL_MS) : 1_000;

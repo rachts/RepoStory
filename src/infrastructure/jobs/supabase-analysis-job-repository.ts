@@ -168,6 +168,46 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
     return structuredClone(updated);
   }
 
+  public async updateJobIfStatus(
+    jobId: string,
+    patch: AnalysisJobPatch,
+    expectedStatuses: AnalysisJobRecord["status"][],
+    ownerId?: string,
+  ): Promise<{ won: boolean; job?: AnalysisJobRecord }> {
+    const params = new URLSearchParams({
+      job_id: `eq.${jobId}`,
+      status: `in.(${expectedStatuses.join(",")})`,
+    });
+    if (ownerId) params.set("owner_id", `eq.${ownerId}`);
+
+    const rowPatch: JsonRecord = {
+      updated_at: patch.updatedAt ?? nowIso(),
+    };
+    if (patch.status !== undefined) rowPatch.status = patch.status;
+    if (patch.stage !== undefined) rowPatch.stage = patch.stage;
+    if (patch.progress !== undefined) rowPatch.progress = patch.progress;
+    if (patch.message !== undefined) rowPatch.message = patch.message;
+    if (patch.error !== undefined) rowPatch.error = patch.error;
+    if (patch.heartbeatAt !== undefined) rowPatch.heartbeat_at = patch.heartbeatAt;
+
+    const rows = asRows<JsonRecord>(await this.request<unknown>(
+      "conditional updating analysis job",
+      "repo_story_jobs",
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(rowPatch),
+      },
+      params.toString(),
+    ));
+
+    if (rows.length > 0 && rows[0]) {
+      return { won: true, job: rowToJob(rows[0]) };
+    }
+    const current = await this.job(jobId, ownerId);
+    return { won: false, job: current };
+  }
+
   public async findReusableJob(cacheKey: string, ownerId: string, now = Date.now()): Promise<AnalysisJobRecord | undefined> {
     const params = new URLSearchParams({ select: "*", owner_id: `eq.${ownerId}`, cache_key: `eq.${cacheKey}`, expires_at: `gt.${new Date(now).toISOString()}`, order: "updated_at.desc", limit: "1" });
     params.set("status", "in.(queued,fetching,analyzing,explaining,completed)");
