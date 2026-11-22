@@ -1,7 +1,7 @@
 import type { RepositoryProvider, RepositoryReference, RepositorySnapshot, RepositoryFile } from "@/domain/repository";
 import { AppError } from "@/domain/errors";
 import { err, ok, type Result } from "@/shared/result";
-import { DEFAULT_LIMITS, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
+import { DEFAULT_LIMITS, DEFAULT_MAX_HEAP_BYTES, type AnalysisBudget, type AnalysisLimits } from "@/shared/limits";
 import { filterFiles } from "@/analysis/filter-files";
 import { validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { redactSecrets } from "@/shared/redaction";
@@ -28,6 +28,7 @@ export interface GitHubProviderOptions {
   cacheStore?: CacheStore;
   tokenPool?: GitHubTokenPool;
   circuitBreaker?: GitHubCircuitBreaker;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
 }
 
 type JsonResult<T> = Result<T, AppError>;
@@ -315,6 +316,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
   public readonly tokenPool: GitHubTokenPool;
   public readonly circuitBreaker: GitHubCircuitBreaker;
   public readonly cacheStore: CacheStore;
+  private readonly sleepImpl: ((ms: number, signal?: AbortSignal) => Promise<void>) | undefined;
 
   public constructor(options: GitHubProviderOptions = {}) {
     this.fetchImpl = options.fetchImpl ?? fetch;
@@ -322,6 +324,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     this.tokenPool = options.tokenPool ?? new GitHubTokenPool(options.tokens || options.token);
     this.circuitBreaker = options.circuitBreaker ?? new GitHubCircuitBreaker();
     this.cacheStore = options.cacheStore ?? new InMemoryCacheStore();
+    this.sleepImpl = options.sleep;
 
     const safeFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const mergedInit: RequestInit = {
@@ -333,13 +336,18 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     };
 
     const isTest = process.env.NODE_ENV === "test";
+    const testBaseUrl =
+      process.env.NODE_ENV !== "production" && process.env.GITHUB_API_BASE_URL
+        ? process.env.GITHUB_API_BASE_URL.replace(/\/+$/, "")
+        : undefined;
 
     this.octokit = new ResilientOctokit({
+      ...(testBaseUrl ? { baseUrl: testBaseUrl } : {}),
       request: {
         fetch: safeFetch,
       },
       throttle: {
-        enabled: !isTest,
+        enabled: !isTest && !testBaseUrl,
         onRateLimit: () => false,
         onSecondaryRateLimit: () => false,
       },
@@ -350,7 +358,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     });
   }
 
-  private async dispatch(initialUrl: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget): Promise<Response> {
+  private async dispatch(initialUrl: URL, fetchOptions: RequestInit, stage: string, budget?: AnalysisBudget, tokenOverride?: string): Promise<Response> {
     const maxAttempts = 3;
     let attempt = 0;
     let currentUrl = initialUrl;
@@ -362,12 +370,31 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       budget?.check();
       this.circuitBreaker.check();
 
+      const testApiOrigin =
+        process.env.NODE_ENV !== "production" && process.env.GITHUB_API_BASE_URL
+          ? new URL(process.env.GITHUB_API_BASE_URL).origin.toLowerCase()
+          : null;
+      const testCodeloadOrigin =
+        process.env.NODE_ENV !== "production" && process.env.GITHUB_CODELOAD_BASE_URL
+          ? new URL(process.env.GITHUB_CODELOAD_BASE_URL).origin.toLowerCase()
+          : testApiOrigin;
+
       // Ensure the URL is valid and targets api.github.com, or codeload.github.com for archive
-      const isApiGithub = currentUrl.hostname.toLowerCase() === "api.github.com";
-      const isCodeload = currentUrl.hostname.toLowerCase() === "codeload.github.com";
+      const currentOrigin = currentUrl.origin.toLowerCase();
+      const isApiGithub =
+        currentUrl.hostname.toLowerCase() === "api.github.com" ||
+        (testApiOrigin !== null && currentOrigin === testApiOrigin);
+      const isCodeload =
+        stage === "archive" &&
+        (currentUrl.hostname.toLowerCase() === "codeload.github.com" ||
+          (testCodeloadOrigin !== null && currentOrigin === testCodeloadOrigin));
+
+      const isProtocolPermitted =
+        currentUrl.protocol === "https:" ||
+        (testApiOrigin !== null && currentUrl.protocol === "http:");
 
       const isHostPermitted =
-        currentUrl.protocol === "https:" &&
+        isProtocolPermitted &&
         ((isApiGithub &&
           (currentUrl.pathname.startsWith("/repos/") ||
             currentUrl.pathname.startsWith("/repositories/") ||
@@ -382,7 +409,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         });
       }
 
-      const token = this.tokenPool.getBestToken();
+      const token = this.tokenPool.getBestToken(tokenOverride);
       const headers: Record<string, string> = {
         accept: stage === "archive" ? "application/x-gzip, application/octet-stream, */*" : "application/vnd.github+json",
       };
@@ -503,9 +530,14 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         }
 
         const isRedirectAllowed =
-          locUrl.protocol === "https:" &&
+          (locUrl.protocol === "https:" ||
+            (testApiOrigin !== null && locUrl.protocol === "http:")) &&
           (locUrl.hostname.toLowerCase() === "api.github.com" ||
-            (stage === "archive" && locUrl.hostname.toLowerCase() === "codeload.github.com"));
+            (testApiOrigin !== null && locUrl.origin.toLowerCase() === testApiOrigin) ||
+            (stage === "archive" &&
+              (locUrl.hostname.toLowerCase() === "codeload.github.com" ||
+                (testCodeloadOrigin !== null &&
+                  locUrl.origin.toLowerCase() === testCodeloadOrigin))));
 
         if (!isRedirectAllowed) {
           throw new AppError({
@@ -548,11 +580,64 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           return response;
         }
 
+        let baseDelayMs: number;
+        if (retryAfter && /^\d+$/.test(retryAfter)) {
+          baseDelayMs = Number(retryAfter) * 1000;
+        } else if (reset && /^\d+$/.test(reset)) {
+          const nowSec = Math.floor(Date.now() / 1000);
+          const diffSec = Math.max(1, Number(reset) - nowSec);
+          baseDelayMs = diffSec * 1000;
+        } else {
+          baseDelayMs = 50 * 2 ** (attempt - 1);
+        }
+
+        // Full jitter (0ms to 500ms, or up to 20% of baseDelayMs)
+        const jitterMs = Math.random() * Math.min(500, Math.max(50, baseDelayMs * 0.2));
+        const backoffMs = baseDelayMs + jitterMs;
+
+        const remainingBudgetMs = budget?.remainingMs ? budget.remainingMs() : undefined;
+
+        // If a budget is active and backoff does not fit in remaining analysis budget, fail fast
+        if (remainingBudgetMs !== undefined && backoffMs >= remainingBudgetMs) {
+          throw new AppError({
+            code: "GITHUB_RATE_LIMITED",
+            stage: "fetch",
+            message: `GitHub rate limit reached. Backoff of ${Math.ceil(backoffMs / 1000)}s exceeds remaining analysis budget (${Math.floor(remainingBudgetMs / 1000)}s).`,
+            reason: `GitHub API returned ${response.status} with backoff of ${Math.round(backoffMs)}ms, exceeding remaining budget of ${Math.round(remainingBudgetMs)}ms.`,
+            hint: "The job will be requeued with a delay.",
+            retryable: true,
+            details: {
+              resetAt: resetEpoch,
+              retryAt: new Date(resetEpoch * 1000).toISOString(),
+              retryAfterSeconds: Math.ceil(backoffMs / 1000),
+              backoffMs: Math.round(backoffMs),
+              remainingBudgetMs: Math.round(remainingBudgetMs),
+            },
+          });
+        }
+
         if (attempt < maxAttempts && !this.circuitBreaker.isOpen()) {
-          const backoffMs = retryAfter && /^\d+$/.test(retryAfter)
-            ? Math.min(Number(retryAfter) * 1000, 100)
-            : Math.min(50 * 2 ** (attempt - 1), 100);
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          if (this.sleepImpl) {
+            await this.sleepImpl(backoffMs, fetchOptions.signal ?? undefined);
+          } else if (process.env.NODE_ENV === "test" || process.env.VITEST === "true") {
+            await new Promise((resolve) => setTimeout(resolve, Math.min(backoffMs, 10)));
+          } else {
+            await new Promise<void>((resolve, reject) => {
+              const timer = setTimeout(resolve, backoffMs);
+              if (fetchOptions.signal) {
+                const onAbort = () => {
+                  clearTimeout(timer);
+                  reject(fetchOptions.signal?.reason ?? new AppError({ code: "ANALYSIS_TIMEOUT", message: "Aborted while waiting for rate-limit backoff.", retryable: true }));
+                };
+                if (fetchOptions.signal.aborted) {
+                  clearTimeout(timer);
+                  reject(fetchOptions.signal.reason);
+                  return;
+                }
+                fetchOptions.signal.addEventListener("abort", onAbort, { once: true });
+              }
+            });
+          }
           continue;
         }
 
@@ -572,7 +657,9 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
     signal?: AbortSignal,
     budget?: AnalysisBudget,
     onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
+    options?: { token?: string },
   ): Promise<Result<RepositorySnapshot, AppError>> {
+    const tokenOverride = options?.token;
     const fetchOptions: RequestInit = { signal, cache: "no-store" };
     const responseLimit = this.limits.maxResponseBytes ?? RESPONSE_SIZE_DEFAULT;
     const pathLimit = this.limits.maxPathLength ?? TREE_PATH_LENGTH_DEFAULT;
@@ -588,14 +675,37 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       pathCollision: 0,
     };
     const warnings: string[] = [];
+    const unresolvedSubtrees: string[] = [];
 
     try {
       budget?.check();
       onProgress?.({ stage: "fetch-metadata", progress: 10, message: "Reading repository metadata" });
       const metaUrl = buildSafeGitHubApiUrl(reference.owner, reference.name);
-      const metaResponse = await this.dispatch(metaUrl, fetchOptions, "metadata", budget);
+      const metaResponse = await this.dispatch(metaUrl, fetchOptions, "metadata", budget, tokenOverride);
       if (!metaResponse.ok) {
-        if (metaResponse.status === 404) return err(new AppError({ code: "REPOSITORY_NOT_FOUND", message: "GitHub repository not found." }));
+        if (metaResponse.status === 404) {
+          const effectiveToken = this.tokenPool.getBestToken(tokenOverride);
+          if (!effectiveToken) {
+            return err(new AppError({
+              code: "REPOSITORY_NOT_FOUND_OR_PRIVATE",
+              stage: "fetch",
+              message: "Repository not found or private. Make the repository public or sign in with a GitHub token that has repo scope.",
+              reason: "Repository not found or requires authentication with repo scope.",
+              hint: "Make the repository public or sign in with a GitHub token that has repo scope.",
+              retryable: false,
+              details: { stage: "fetch", repository: `${reference.owner}/${reference.name}` },
+            }));
+          }
+          return err(new AppError({
+            code: "REPOSITORY_NOT_FOUND",
+            stage: "fetch",
+            message: "GitHub repository not found.",
+            reason: "GitHub repository not found.",
+            hint: "Verify the repository URL and branch name.",
+            retryable: false,
+            details: { stage: "fetch", repository: `${reference.owner}/${reference.name}` },
+          }));
+        }
         return err(responseFailure(metaResponse, "metadata"));
       }
 
@@ -617,7 +727,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         budget?.check();
         onProgress?.({ stage: "fetch-tree", progress: 25, message: "Reading repository file tree" });
         const treeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`, { recursive: "1" });
-        const treeResponse = await this.dispatch(treeUrl, fetchOptions, "tree", budget);
+        const treeResponse = await this.dispatch(treeUrl, fetchOptions, "tree", budget, tokenOverride);
         if (!treeResponse.ok) return err(responseFailure(treeResponse, "tree"));
 
         const treeResult = await readJsonResponse<Record<string, unknown>>(treeResponse, "tree", responseLimit, budget);
@@ -634,7 +744,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           warnings.push("GitHub repository tree was truncated. Attempting top-level subtree resolution.");
           try {
             const rootTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(branch)}`);
-            const rootTreeResponse = await this.dispatch(rootTreeUrl, fetchOptions, "root-tree", budget);
+            const rootTreeResponse = await this.dispatch(rootTreeUrl, fetchOptions, "root-tree", budget, tokenOverride);
             if (rootTreeResponse.ok) {
               const rootTreeResult = await readJsonResponse<Record<string, unknown>>(rootTreeResponse, "root-tree", responseLimit, budget);
               if (rootTreeResult.ok && isRecord(rootTreeResult.value) && Array.isArray(rootTreeResult.value.tree)) {
@@ -650,7 +760,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
                     try {
                       budget?.check();
                       const subTreeUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `git/trees/${encodeURIComponent(item.sha)}`, { recursive: "1" });
-                      const subResponse = await this.dispatch(subTreeUrl, fetchOptions, "subtree", budget);
+                      const subResponse = await this.dispatch(subTreeUrl, fetchOptions, "subtree", budget, tokenOverride);
                       if (subResponse.ok) {
                         const subResult = await readJsonResponse<Record<string, unknown>>(subResponse, "subtree", responseLimit, budget);
                         if (subResult.ok && isRecord(subResult.value) && Array.isArray(subResult.value.tree)) {
@@ -664,12 +774,15 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
                           }
                         } else {
                           anySubtreeFailed = true;
+                          unresolvedSubtrees.push(item.path);
                         }
                       } else {
                         anySubtreeFailed = true;
+                        unresolvedSubtrees.push(item.path);
                       }
                     } catch {
                       anySubtreeFailed = true;
+                      unresolvedSubtrees.push(item.path);
                     }
                   }
                 }
@@ -685,13 +798,23 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
               }
             } else {
               warnings.push("Top-level tree request failed. Analyzing partial tree.");
+              unresolvedSubtrees.push("(root)");
             }
           } catch {
             warnings.push("Failed to fetch subtrees for truncated repository. Analyzing partial tree.");
+            if (!unresolvedSubtrees.includes("(root)")) unresolvedSubtrees.push("(root)");
           }
 
           if (rawTreeEntries.length === 0) {
-            return err(new AppError({ code: "GITHUB_TREE_TRUNCATED", message: "GitHub repository tree was truncated and cannot be analyzed safely." }));
+            return err(new AppError({
+              code: "GITHUB_TREE_TRUNCATED",
+              stage: "tree",
+              message: "GitHub repository tree was truncated and cannot be analyzed safely.",
+              reason: "Repository tree was truncated and subtrees could not be resolved.",
+              hint: "Analyze a specific branch or subpath.",
+              retryable: false,
+              details: { stage: "tree", unresolvedSubtrees },
+            }));
           }
         }
 
@@ -743,6 +866,28 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       }
 
       budget?.check();
+      const blobCount = treeEntries.filter((e) => e.type === "blob").length;
+      const preflightThreshold = this.limits.maxPreflightFiles ?? (process.env.REPO_STORY_MAX_PREFLIGHT_FILES ? Number(process.env.REPO_STORY_MAX_PREFLIGHT_FILES) : this.limits.maxTreeEntries ?? 10_000);
+      const largeRepoMode = (process.env.REPO_STORY_LARGE_REPO_MODE as "fail" | "sample") || "fail";
+
+      if (blobCount > preflightThreshold) {
+        if (largeRepoMode === "fail") {
+          return err(new AppError({
+            code: "REPO_TOO_LARGE",
+            stage: "tree",
+            message: `Repository contains ${blobCount} files, exceeding pre-flight limit of ${preflightThreshold}.`,
+            reason: `Repository contains ${blobCount} files, exceeding pre-flight limit of ${preflightThreshold}.`,
+            hint: "Analyze a smaller repository or set REPO_STORY_LARGE_REPO_MODE=sample for sampled analysis.",
+            retryable: false,
+            details: { blobCount, preflightThreshold, mode: "fail" },
+          }));
+        } else {
+          warnings.push(`Repository contains ${blobCount} files (limit ${preflightThreshold}); running in sampled analysis mode.`);
+          treeEntries = treeEntries.slice(0, preflightThreshold);
+        }
+      }
+
+      budget?.check();
       const { collisions, warnings: collisionWarnings, safePaths } = detectCaseCollisions(treeEntries.map((e) => e.path));
       for (const col of collisions) {
         coverageDetails.push({ path: col.path, reason: "path-collision" });
@@ -778,9 +923,13 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             reference.name,
             `tarball/${encodeURIComponent(commitSha)}`,
           );
-          const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget);
+          const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget, tokenOverride);
 
           if (archiveResponse.ok && archiveResponse.body) {
+            const contentLengthHeader = archiveResponse.headers.get("content-length");
+            const parsedLength = contentLengthHeader ? parseInt(contentLengthHeader, 10) : undefined;
+            const totalBytes = Number.isFinite(parsedLength) && (parsedLength ?? 0) > 0 ? parsedLength : undefined;
+
             const extracted = await extractRepositoryArchive({
               stream: archiveResponse.body,
               candidatePaths: candidatePathsSet,
@@ -789,6 +938,8 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
               cacheStore: this.cacheStore,
               cacheKeyPrefix: `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:`,
               signal,
+              totalBytes,
+              onProgress: (p) => onProgress?.({ stage: p.stage, progress: p.progress, message: p.message }),
             });
 
             if (extracted.files.length > 0 || candidates.length === 0) {
@@ -822,7 +973,10 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             warnings.push(`Archive endpoint returned status ${archiveResponse.status}. Falling back to per-file fetch.`);
           }
         } catch (archiveError) {
-          if (archiveError instanceof AppError && archiveError.code === "ANALYSIS_TIMEOUT") {
+          if (
+            archiveError instanceof AppError &&
+            (archiveError.code === "ANALYSIS_TIMEOUT" || archiveError.code === "ARCHIVE_DOWNLOAD_STALLED")
+          ) {
             throw archiveError;
           }
           warnings.push(`Archive fetch failed: ${archiveError instanceof Error ? archiveError.message : "unknown error"}. Falling back to per-file fetch.`);
@@ -849,7 +1003,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             }
 
             const mem = process.memoryUsage().heapUsed;
-            const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || 512 * 1024 * 1024;
+            const maxHeapBytes = Number(process.env.MAX_HEAP_BYTES) || DEFAULT_MAX_HEAP_BYTES;
             if (mem > maxHeapBytes) {
               coverageDetails.push({ path: item.path, reason: "limit-reached", details: "Memory budget reached" });
               skippedByReason.limitReached += 1;
@@ -865,7 +1019,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
             } else {
               budget?.check();
               const contentUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `contents/${encodeGitHubPath(item.path)}`, { ref: commitSha });
-              const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget);
+              const contentResponse = await this.dispatch(contentUrl, fetchOptions, "content", budget, tokenOverride);
               if (!contentResponse.ok) return err(responseFailure(contentResponse, "content"));
 
               const contentResult = await readJsonResponse<Record<string, unknown>>(contentResponse, "content", responseLimit, budget);
@@ -938,6 +1092,7 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         },
         filesSkippedDetails: coverageDetails,
         skippedFiles: coverageDetails.map((d) => ({ path: d.path, reason: d.reason })),
+        unresolvedSubtrees: unresolvedSubtrees.length > 0 ? unresolvedSubtrees : undefined,
         warnings,
         analyzedPercent,
         treeTruncated: isTruncated,
@@ -965,6 +1120,59 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       if (error instanceof AppError) return err(error);
       if (signal?.aborted) return err(new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true }));
       return err(new AppError({ code: "REPOSITORY_INACCESSIBLE", message: "GitHub request failed.", retryable: true }));
+    }
+  }
+
+  public async resolveCommitSha(
+    reference: RepositoryReference,
+    options?: { token?: string; signal?: AbortSignal },
+  ): Promise<Result<string, AppError>> {
+    const branchOrRef = reference.branch && reference.branch !== "default" ? reference.branch : "HEAD";
+    if (/^[0-9a-f]{40}$/i.test(branchOrRef)) {
+      return ok(branchOrRef);
+    }
+
+    const tokenOverride = options?.token;
+    const fetchOptions: RequestInit = { signal: options?.signal, cache: "no-store" };
+    const commitUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `commits/${encodeURIComponent(branchOrRef)}`);
+
+    try {
+      const response = await this.dispatch(commitUrl, fetchOptions, "commits", undefined, tokenOverride);
+      if (!response.ok) {
+        if (response.status === 404) {
+          return err(new AppError({
+            code: "REPOSITORY_NOT_FOUND",
+            stage: "fetch",
+            message: "Repository or branch not found.",
+            retryable: false,
+          }));
+        }
+        return err(new AppError({
+          code: "REF_LOOKUP_FAILED",
+          stage: "fetch",
+          message: `Failed to resolve repository commit SHA (${response.status})`,
+          retryable: true,
+        }));
+      }
+
+      const data = (await response.json()) as { sha?: string };
+      if (typeof data.sha === "string" && /^[0-9a-f]{40}$/i.test(data.sha)) {
+        return ok(data.sha);
+      }
+      return err(new AppError({
+        code: "INVALID_COMMIT_SHA",
+        stage: "fetch",
+        message: "GitHub API returned invalid commit SHA.",
+        retryable: false,
+      }));
+    } catch (error) {
+      if (error instanceof AppError) return err(error);
+      return err(new AppError({
+        code: "REF_LOOKUP_FAILED",
+        stage: "fetch",
+        message: "Failed to resolve repository commit SHA.",
+        retryable: true,
+      }));
     }
   }
 }

@@ -2,6 +2,9 @@ export type JobQueueStatus = "queued" | "running" | "succeeded" | "failed" | "ca
 
 export interface JobQueueError {
   code: string;
+  stage?: string;
+  reason?: string;
+  hint?: string;
   message: string;
   retryable: boolean;
   details?: Record<string, unknown>;
@@ -18,6 +21,7 @@ export interface JobQueueItem {
   heartbeatAt?: string;
   availableAt: string;
   error?: JobQueueError;
+  payload?: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -33,7 +37,10 @@ export interface JobQueueOptions {
  * Implements state machine: queued -> running -> succeeded | failed | cancelled
  */
 export interface JobQueue {
-  enqueue(jobId: string, options?: { availableAt?: Date; maxAttempts?: number }): Promise<JobQueueItem>;
+  enqueue(
+    jobId: string,
+    options?: { availableAt?: Date; maxAttempts?: number; payload?: Record<string, unknown> },
+  ): Promise<JobQueueItem>;
   claim(workerId: string): Promise<JobQueueItem | undefined>;
   heartbeat(jobId: string, workerId: string): Promise<boolean>;
   complete(jobId: string, workerId: string): Promise<boolean>;

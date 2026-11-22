@@ -45,7 +45,18 @@ export async function POST(request: Request): Promise<NextResponse> {
 
     const diagrams = job ? await analysisRepository.listAnalysisDiagrams(input.analysisId, ownerId) : analysisStore.listDiagrams(input.analysisId);
     const explanationInput = buildExplanationInput(analysis, diagrams, serverConfig.groqMaxInputChars);
-    const explanation = await generateProjectExplanation(explanationInput.serialized);
+    const testMockBehavior = process.env.NODE_ENV !== "production" ? request.headers.get("x-test-mock-ai-behavior") ?? undefined : undefined;
+    if (testMockBehavior) {
+      process.env.REPO_STORY_MOCK_AI_BEHAVIOR = testMockBehavior;
+    }
+    let explanation;
+    try {
+      explanation = await generateProjectExplanation(explanationInput.serialized);
+    } finally {
+      if (testMockBehavior) {
+        delete process.env.REPO_STORY_MOCK_AI_BEHAVIOR;
+      }
+    }
     const unknownEvidenceIds = unknownExplanationEvidenceIds(explanation, collectExplanationEvidenceIds(explanationInput.payload));
     if (unknownEvidenceIds.length) throw new AppError({ code: "AI_INVALID_RESPONSE", message: "The AI explanation referenced evidence that was not supplied by the analysis.", retryable: true, details: { unknownEvidenceReferences: unknownEvidenceIds.length } });
     if (job) await analysisRepository.saveExplanation(input.analysisId, explanation, ownerId);

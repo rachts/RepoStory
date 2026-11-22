@@ -8,6 +8,8 @@ import { explainProject, ExplainProjectError } from "@/lib/api/explain-project";
 interface ProjectExplanationPanelProps {
   analysisId: string;
   evidenceById: ReadonlyMap<string, EvidenceReference>;
+  initialExplanation?: ProjectExplanation;
+  initialUnavailable?: { code: string; message: string };
 }
 
 type ExplanationState =
@@ -16,31 +18,69 @@ type ExplanationState =
   | { status: "success"; explanation: ProjectExplanation; model: string }
   | { status: "error"; message: string; code: string; expired: boolean; unavailable: boolean; retryable: boolean };
 
-export function ProjectExplanationPanel({ analysisId, evidenceById }: ProjectExplanationPanelProps): React.JSX.Element {
-  const [state, setState] = useState<ExplanationState>({ status: "idle" });
+const RETRYABLE_AI_CODES = new Set([
+  "AI_INVALID_RESPONSE",
+  "AI_TIMEOUT",
+  "AI_RATE_LIMITED",
+  "AI_UPSTREAM_FAILED",
+  "AI_EXPLANATION_FAILED",
+  "AI_REQUEST_REJECTED",
+]);
+
+const CONFIG_ERROR_CODES = new Set([
+  "AI_AUTH_FAILED",
+  "AI_PERMISSION_DENIED",
+  "AI_MODEL_UNAVAILABLE",
+  "AI_NOT_CONFIGURED",
+  "AI_DISABLED",
+]);
+
+export function ProjectExplanationPanel({ analysisId, evidenceById, initialExplanation, initialUnavailable }: ProjectExplanationPanelProps): React.JSX.Element {
+  const [userState, setUserState] = useState<ExplanationState | null>(null);
   const requestId = useRef(0);
+
+  const derivedInitialState: ExplanationState = initialExplanation
+    ? { status: "success", explanation: initialExplanation, model: "Groq" }
+    : initialUnavailable
+      ? {
+          status: "error",
+          message: initialUnavailable.message,
+          code: initialUnavailable.code,
+          expired: initialUnavailable.code === "ANALYSIS_NOT_FOUND",
+          unavailable: CONFIG_ERROR_CODES.has(initialUnavailable.code),
+          retryable: RETRYABLE_AI_CODES.has(initialUnavailable.code),
+        }
+      : { status: "idle" };
+
+  const state = userState ?? derivedInitialState;
 
   const requestExplanation = async (force = false): Promise<void> => {
     const currentRequest = requestId.current + 1;
     requestId.current = currentRequest;
-    setState({ status: "loading" });
+    setUserState({ status: "loading" });
     try {
       const response = await explainProject(analysisId, undefined, force);
       if (requestId.current !== currentRequest) return;
-      setState({ status: "success", explanation: response.explanation, model: response.model });
+      setUserState({ status: "success", explanation: response.explanation, model: response.model });
     } catch (error) {
       if (requestId.current !== currentRequest) return;
       const normalized = error instanceof ExplainProjectError ? error : new ExplainProjectError({ code: "AI_EXPLANATION_FAILED", message: "The project explanation could not be generated.", status: 500, retryable: true });
-      setState({
+      const isExpired = normalized.code === "ANALYSIS_NOT_FOUND";
+      const isConfig = CONFIG_ERROR_CODES.has(normalized.code);
+      const isRetryable = normalized.retryable || RETRYABLE_AI_CODES.has(normalized.code);
+      setUserState({
         status: "error",
         message: normalized.message,
         code: normalized.code,
-        expired: normalized.code === "ANALYSIS_NOT_FOUND",
-        unavailable: !normalized.retryable && normalized.code !== "ANALYSIS_NOT_FOUND",
-        retryable: normalized.retryable,
+        expired: isExpired,
+        unavailable: isConfig,
+        retryable: isRetryable && !isExpired && !isConfig,
       });
     }
   };
+
+  const isRetryableError = state.status === "error" && (state.retryable || RETRYABLE_AI_CODES.has(state.code)) && !state.expired && !CONFIG_ERROR_CODES.has(state.code);
+  const isConfigError = state.status === "error" && (state.unavailable || CONFIG_ERROR_CODES.has(state.code));
 
   return <section className="project-explanation-panel page-width" aria-labelledby="project-explanation-heading" aria-busy={state.status === "loading"}>
     <div className="project-explanation-header">
@@ -49,11 +89,34 @@ export function ProjectExplanationPanel({ analysisId, evidenceById }: ProjectExp
         <h2 id="project-explanation-heading">Make the project easier to explain</h2>
         <p>Groq translates the verified static findings into simple language. It does not discover architecture independently or execute the repository.</p>
       </div>
-      {state.status !== "success" ? <button className="primary-button project-explanation-action" onClick={() => void requestExplanation(state.status === "error" && state.retryable)} disabled={state.status === "loading" || state.status === "error" && (state.expired || state.unavailable)}>{state.status === "loading" ? "Reading the project structure…" : state.status === "error" && state.retryable && !state.expired ? "Try again" : "Explain this project"}</button> : <span className="project-explanation-ready">Evidence-backed explanation</span>}
+      {state.status !== "success" ? <button className="primary-button project-explanation-action" onClick={() => void requestExplanation(state.status === "error" && state.retryable)} disabled={state.status === "loading" || (state.status === "error" && !state.retryable)}>{state.status === "loading" ? "Reading the project structure…" : state.status === "error" && state.retryable ? "Try again" : "Explain this project"}</button> : <span className="project-explanation-ready">Evidence-backed explanation</span>}
     </div>
     {state.status === "idle" ? <p className="project-explanation-hint">Your diagrams remain available immediately while this optional explanation is generated.</p> : null}
     {state.status === "loading" ? <div className="project-explanation-loading" role="status" aria-live="polite"><span className="spinner" aria-hidden="true" /> Reading the project structure…</div> : null}
-    {state.status === "error" ? <div className={`project-explanation-feedback ${state.unavailable || state.expired ? "is-neutral" : "is-error"}`} role={state.unavailable || state.expired ? "status" : "alert"}><strong>{state.expired ? "This analysis has expired." : state.unavailable ? "AI explanation is unavailable." : "The deterministic analysis is still available."}</strong><p>{state.expired ? "Analyze the repository again to create a fresh explanation." : state.message}</p>{state.unavailable ? <p>Deterministic analysis and diagrams remain available.</p> : null}</div> : null}
+    {state.status === "error" ? (
+      state.expired ? (
+        <div className="project-explanation-feedback is-neutral" role="status">
+          <strong>This analysis has expired.</strong>
+          <p>Analyze the repository again to create a fresh explanation.</p>
+        </div>
+      ) : isConfigError ? (
+        <div className="project-explanation-feedback is-error" role="alert">
+          <strong>AI explanation is unavailable.</strong>
+          <p>{state.message}</p>
+          <p>Deterministic analysis and diagrams remain available.</p>
+        </div>
+      ) : isRetryableError ? (
+        <div className="project-explanation-feedback is-neutral" role="status">
+          <strong>The AI explanation is temporarily unavailable.</strong>
+          <p>The analysis and diagrams below are built from verified static findings and are unaffected.</p>
+        </div>
+      ) : (
+        <div className="project-explanation-feedback is-error" role="alert">
+          <strong>The deterministic analysis is still available.</strong>
+          <p>{state.message}</p>
+        </div>
+      )
+    ) : null}
     {state.status === "success" ? <ExplanationContent explanation={state.explanation} evidenceById={evidenceById} model={state.model} /> : null}
   </section>;
 }

@@ -7,15 +7,24 @@ import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/r
 import type { AnalysisJob, AnalysisJobRecord } from "@/domain/analysis";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { Diagram, DiagramDirection, DiagramEdge, DiagramNode, DiagramType } from "@/domain/diagram";
+import type { ProjectExplanation } from "@/domain/ai-explanation";
 import type { EvidenceReference } from "@/domain/evidence";
 import { toMarkdown, toMermaid } from "@/analysis/exports";
 import { ProjectExplanationPanel } from "@/components/ProjectExplanationPanel";
 import { RepoStoryBrand } from "@/components/RepoStoryBrand";
 
-interface AnalysisResponse extends AnalysisJob { diagrams: Diagram[]; architectureStory?: ArchitectureStory }
+interface AnalysisResponse extends AnalysisJob {
+  diagrams: Diagram[];
+  architectureStory?: ArchitectureStory;
+  explanation?: ProjectExplanation;
+  explanationUnavailable?: { code: string; message: string };
+}
 interface ExportResponse { content: string; filename: string; mimeType: string }
 interface ExportErrorResponse { error?: { code?: string; message?: string } }
-interface RepoAnalysisProps { analysisId: string }
+export interface RepoAnalysisProps {
+  analysisId: string;
+  maxPollingDurationMs?: number;
+}
 
 function isAnalysisResponse(value: unknown): value is AnalysisResponse {
   return Boolean(value && typeof value === "object" && Array.isArray((value as { diagrams?: unknown }).diagrams));
@@ -51,6 +60,80 @@ function fallbackNodePosition(index: number, direction: DiagramDirection): { x: 
   return { x: index * spacing * (direction === "RL" ? -1 : 1), y: 80 };
 }
 
+function createStructureFallbackDiagram(analysis: AnalysisResponse): Diagram {
+  const repoName = analysis.repository.name || "Repository";
+  const repoDesc = analysis.repository.description || "Repository root";
+  const createdAt = new Date().toISOString();
+
+  const rootDirs = new Set<string>();
+  const evidenceList: EvidenceReference[] = [];
+
+  for (const finding of analysis.findings ?? []) {
+    for (const ev of finding.evidence ?? []) {
+      if (ev.filePath) {
+        evidenceList.push(ev);
+        const topDir = ev.filePath.split("/")[0];
+        if (topDir && !topDir.includes(".")) {
+          rootDirs.add(topDir);
+        }
+      }
+    }
+  }
+
+  const nodes: DiagramNode[] = [
+    {
+      id: "repo",
+      technicalLabel: repoName,
+      plainEnglishLabel: "Repository",
+      explanation: repoDesc,
+      kind: "directory",
+      visible: true,
+      confidence: "medium",
+      evidence: evidenceList.slice(0, 3),
+      position: { x: 120, y: 80 },
+    },
+  ];
+
+  const sortedDirs = Array.from(rootDirs).sort();
+  sortedDirs.forEach((dir, idx) => {
+    nodes.push({
+      id: `dir-${dir}`,
+      technicalLabel: dir,
+      plainEnglishLabel: `${dir} directory`,
+      explanation: "Top-level area detected in repository evidence.",
+      kind: "directory",
+      visible: true,
+      confidence: "medium",
+      evidence: evidenceList.filter((e) => e.filePath?.startsWith(`${dir}/`)).slice(0, 3),
+      position: fallbackNodePosition(idx + 1, "TB"),
+    });
+  });
+
+  const edges: DiagramEdge[] = sortedDirs.map((dir) => ({
+    id: `edge-repo-${dir}`,
+    source: "repo",
+    target: `dir-${dir}`,
+    label: "contains",
+    explanation: "Repository contains directory",
+    visible: true,
+    confidence: "medium",
+    evidence: [],
+  }));
+
+  return {
+    id: `fallback-structure-${analysis.id}`,
+    analysisId: analysis.id,
+    type: "repository-structure",
+    title: "Repository structure (fallback)",
+    description: "Fallback repository structure generated from analyzed finding paths.",
+    direction: "TB",
+    nodes,
+    edges,
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
 function getSupportedDiagrams(diagrams: readonly Diagram[]): Diagram[] {
   return diagrams
     .filter((item) => SUPPORTED_DIAGRAM_TYPES.includes(item.type))
@@ -80,7 +163,10 @@ function collectEvidenceById(analysis: AnalysisResponse | null, diagrams: readon
   return evidenceById;
 }
 
-export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Element {
+export function RepoAnalysis({
+  analysisId,
+  maxPollingDurationMs: propMaxPollingDurationMs,
+}: RepoAnalysisProps): React.JSX.Element {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [job, setJob] = useState<AnalysisJobRecord | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -88,6 +174,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
   const [includeArchitectureSummary, setIncludeArchitectureSummary] = useState(true);
   const [selectedElement, setSelectedElement] = useState<{ type: "node" | "edge"; id: string } | null>(null);
   const [draft, setDraft] = useState<Diagram | null>(null);
+  const [fallbackDiagram, setFallbackDiagram] = useState<Diagram | null>(null);
   const [history, setHistory] = useState<Diagram[]>([]);
   const [future, setFuture] = useState<Diagram[]>([]);
   const [saved, setSaved] = useState(true);
@@ -103,7 +190,19 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     setError("");
     try {
       const pollDelays = [0, 250, 500, 1_000, 2_000, 3_000, 5_000];
+      const pollStartTime = Date.now();
+      const envTimeout = process.env.NEXT_PUBLIC_ANALYSIS_POLL_TIMEOUT_MS
+        ? Number(process.env.NEXT_PUBLIC_ANALYSIS_POLL_TIMEOUT_MS)
+        : undefined;
+      const maxPollingDurationMs =
+        propMaxPollingDurationMs ??
+        (Number.isFinite(envTimeout) && (envTimeout ?? 0) > 0 ? envTimeout! : 3 * 60 * 1000);
+
       for (let attempt = 0; ; attempt += 1) {
+        if (Date.now() - pollStartTime > maxPollingDurationMs) {
+          setError("Analysis timed out. Try again");
+          return;
+        }
         const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(analysisId)}`, { cache: "no-store", ...(signal ? { signal } : {}) });
         const payload = await response.json().catch(() => null) as AnalysisJobRecord | AnalysisResponse | { error?: { message?: string } } | null;
         if (isAnalysisResponse(payload)) {
@@ -159,7 +258,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
       if (signal?.aborted || (loadError instanceof DOMException && loadError.name === "AbortError")) return;
       setError(loadError instanceof Error ? loadError.message : "This analysis could not be loaded.");
     }
-  }, [analysisId]);
+  }, [analysisId, propMaxPollingDurationMs]);
 
   const startLoading = useCallback((): void => {
     pollControllerRef.current?.abort();
@@ -175,6 +274,7 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     setSelectedId(null);
     setSelectedElement(null);
     setDraft(null);
+    setFallbackDiagram(null);
     setHistory([]);
     setFuture([]);
     setSaved(true);
@@ -185,7 +285,21 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     return () => pollControllerRef.current?.abort();
   }, [startLoading]);
 
-  const availableDiagrams = useMemo(() => getSupportedDiagrams(analysis?.diagrams ?? []), [analysis?.diagrams]);
+  const availableDiagrams = useMemo(() => getSupportedDiagrams([...(analysis?.diagrams ?? []), ...(fallbackDiagram ? [fallbackDiagram] : [])]), [analysis?.diagrams, fallbackDiagram]);
+  const effectiveAvailability = useMemo(() => {
+    if (analysis?.diagramAvailability && analysis.diagramAvailability.length > 0) {
+      return analysis.diagramAvailability;
+    }
+    if (analysis?.architectureStory?.coverage.diagramAvailability && analysis.architectureStory.coverage.diagramAvailability.length > 0) {
+      return analysis.architectureStory.coverage.diagramAvailability;
+    }
+    return [
+      { type: "system-overview" as const, available: false, reason: "Not enough technology evidence was found." },
+      { type: "api-request-flow" as const, available: false, reason: "No evidence-backed API routes were detected." },
+      { type: "authentication-flow" as const, available: false, reason: "No meaningful authentication evidence was detected." },
+      { type: "repository-structure" as const, available: false, reason: "No structural evidence was generated." },
+    ];
+  }, [analysis]);
   const evidenceById = useMemo(() => collectEvidenceById(analysis, availableDiagrams), [analysis, availableDiagrams]);
   const diagram = draft ?? availableDiagrams.find((item) => item.id === selectedId) ?? availableDiagrams[0] ?? null;
   const story = analysis?.architectureStory;
@@ -243,16 +357,18 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
     }
   };
   const cancelJob = async (): Promise<void> => {
-    if (!job || isTerminalJob(job.status)) return;
+    const targetJobId = job?.jobId || analysisId;
+    if (!targetJobId || (job && isTerminalJob(job.status))) return;
     pollControllerRef.current?.abort();
-    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(job.jobId)}/cancel`, { method: "POST" });
+    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(targetJobId)}/cancel`, { method: "POST" });
     const payload = await response.json().catch(() => null) as { job?: AnalysisJobRecord; error?: { message?: string } } | null;
     if (!response.ok || !payload?.job) { setError(payload?.error?.message ?? "The analysis could not be cancelled."); return; }
     setJob(payload.job);
   };
   const retryJob = async (): Promise<void> => {
-    if (!job) return;
-    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(job.jobId)}/retry`, { method: "POST" });
+    const targetJobId = job?.jobId || analysisId;
+    if (!targetJobId) return;
+    const response = await fetch(`/api/analyze/jobs/${encodeURIComponent(targetJobId)}/retry`, { method: "POST" });
     const payload = await response.json().catch(() => null) as { job?: AnalysisJobRecord; error?: { message?: string } } | null;
     if (!response.ok || !payload?.job) { setError(payload?.error?.message ?? "The analysis could not be retried."); return; }
     setError("");
@@ -332,14 +448,126 @@ export function RepoAnalysis({ analysisId }: RepoAnalysisProps): React.JSX.Eleme
   if (!analysis) {
     return <main className="analysis-page">
       <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
-      {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : job?.status === "failed" ? <StateCard title="The analysis stopped early." message={job.error?.message ?? "The repository could not be analyzed."} action={job.error?.retryable ? <button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button> : undefined} /> : job?.status === "cancelled" ? <StateCard title="Analysis cancelled." message="No completed result was saved. You can start a new analysis from the home page." /> : job?.status === "expired" ? <StateCard title="This analysis expired." message="Analyze the repository again to create a fresh result." /> : <ProgressState progress={job?.progress ?? 8} stage={job?.stage ?? "validating-input"} message={job?.message} action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null} />}
+      {error ? (
+        <StateCard
+          title={
+            error.toLowerCase().includes("longer than expected") ||
+            error.toLowerCase().includes("timeout") ||
+            error.toLowerCase().includes("timed out")
+              ? "Analysis timed out. Try again"
+              : "We couldn’t read this story."
+          }
+          message={
+            error.toLowerCase().includes("timed out")
+              ? "The analysis is taking longer than expected. Please retry."
+              : error
+          }
+          action={
+            <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+              <button className="secondary-button" onClick={startLoading}>Try again</button>
+              <button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>
+            </div>
+          }
+        />
+      ) : job?.status === "failed" ? (
+        <StateCard
+          title="The analysis stopped early."
+          message={job.error?.message ?? "The repository could not be analyzed."}
+          action={<button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : job?.status === "cancelled" ? (
+        <StateCard
+          title="Analysis cancelled."
+          message="No completed result was saved. You can start a new analysis from the home page."
+          action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : job?.status === "expired" ? (
+        <StateCard
+          title="This analysis expired."
+          message="Analyze the repository again to create a fresh result."
+          action={<button className="secondary-button" onClick={() => void retryJob()}>Retry analysis</button>}
+        />
+      ) : (
+        <ProgressState
+          progress={job?.progress ?? 0}
+          stage={job?.stage ?? "validating-input"}
+          message={job?.message}
+          action={job ? <button className="secondary-button" onClick={() => void cancelJob()}>Cancel analysis</button> : null}
+          workerStatus={job?.workerStatus}
+        />
+      )}
     </main>;
   }
 
   return <main className="analysis-page">
     <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{analysis ? `${analysis.repository.owner}/${analysis.repository.name}` : job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
-    {analysis?.status === "completed" ? <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} /> : null}
-    {error ? <StateCard title="We couldn’t read this story." message={error} action={<button className="secondary-button" onClick={startLoading}>Try again</button>} /> : analysis.status === "failed" ? <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} /> : !diagram ? story ? <StoryWithoutDiagram analysis={analysis} story={story} evidenceById={evidenceById} /> : <StateCard title="No supported diagram is available." message="No supported diagrams are available for this repository." details={<AvailabilityList availability={analysis.diagramAvailability} />} /> : <>
+    {analysis?.status === "completed" ? (
+      <ProjectExplanationPanel
+        analysisId={analysis.id}
+        evidenceById={evidenceById}
+        initialExplanation={analysis.explanation}
+        initialUnavailable={analysis.explanationUnavailable}
+      />
+    ) : null}
+    {error ? (
+      <StateCard
+        title={
+          error.toLowerCase().includes("longer than expected") ||
+          error.toLowerCase().includes("timeout") ||
+          error.toLowerCase().includes("timed out")
+            ? "Analysis timed out. Try again"
+            : "We couldn’t read this story."
+        }
+        message={
+          error.toLowerCase().includes("timed out")
+            ? "The analysis is taking longer than expected. Please retry."
+            : error
+        }
+        action={
+          <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
+            <button className="secondary-button" onClick={startLoading}>Try again</button>
+            <button className="primary-button" onClick={() => void retryJob()}>Retry analysis</button>
+          </div>
+        }
+      />
+    ) : analysis.status === "failed" ? (
+      <StateCard title="The analysis stopped early." message={analysis.error?.message ?? "The repository could not be analyzed."} />
+    ) : !diagram ? (
+      story ? (
+        <StoryWithoutDiagram
+          analysis={analysis}
+          story={story}
+          evidenceById={evidenceById}
+          availability={effectiveAvailability}
+          onLoadStructureFallback={() => {
+            const fb = createStructureFallbackDiagram(analysis);
+            setFallbackDiagram(fb);
+            setSelectedId(fb.id);
+          }}
+        />
+      ) : (
+        <StateCard
+          title="No supported diagram is available."
+          message="No supported diagrams are available for this repository."
+          details={<AvailabilityList availability={effectiveAvailability} />}
+          action={
+            <div style={{ marginTop: "20px" }}>
+              <button
+                className="secondary-button"
+                data-testid="load-structure-fallback"
+                onClick={() => {
+                  const fb = createStructureFallbackDiagram(analysis);
+                  setFallbackDiagram(fb);
+                  setSelectedId(fb.id);
+                }}
+              >
+                Show repository structure fallback
+              </button>
+            </div>
+          }
+        />
+      )
+    ) : <>
         <div className="diagram-toolbar page-width"><strong>Diagram workspace</strong><span className={saved ? "save-state" : "save-state unsaved"}>{feedback || (saved ? "Saved" : "Unsaved changes")}</span><button aria-label="Undo" className="toolbar-button" onClick={undo} disabled={!history.length || exportState !== "idle"}>Undo</button><button aria-label="Redo" className="toolbar-button" onClick={redo} disabled={!future.length || exportState !== "idle"}>Redo</button><button className="toolbar-button" onClick={() => void reset()} disabled={exportState !== "idle"}>Reset</button><button className="primary-button" onClick={() => void save()} disabled={saved || exportState !== "idle"}>Save changes</button></div>
         <section className="results-layout page-width"><aside className="diagram-sidebar"><p className="eyebrow"><span className="eyebrow-line" /> Story maps</p><h1>{analysis.repository.name}</h1><p className="sidebar-description">{analysis.repository.description ?? "A guided view of the codebase."}</p><div className="diagram-list" aria-label="Available story maps">{availableDiagrams.map((item, index) => <button key={item.id} aria-label={`${DIAGRAM_TYPE_LABELS[item.type]}: ${item.title}`} className={`diagram-item ${item.id === diagram.id ? "active" : ""}`} data-diagram-type={item.type} onClick={() => selectDiagram(item)}><span className="diagram-index">{String(index + 1).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{DIAGRAM_TYPE_LABELS[item.type]} · {item.nodes.length} nodes · {item.edges.length} connections</small></span><span>→</span></button>)}{analysis.diagramAvailability?.filter((item) => !item.available).map((item) => <div key={item.type} className="unavailable-diagram"><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><small>{item.reason ?? "Not enough evidence to generate this diagram."}</small></div>)}</div><div className="sidebar-note"><span>✦</span><p>Every label is grounded in repository evidence.</p></div></aside>
            <div className="results-main"><div className="results-title"><div><p className="eyebrow"><span className="eyebrow-line" /> Interactive preview</p><h2>{diagram.title}</h2><p>{diagram.description}</p></div><div className="toggle" role="group" aria-label="Label language"><button className={mode === "technical" ? "selected" : ""} aria-pressed={mode === "technical"} onClick={() => setMode("technical")}>Technical</button><button className={mode === "plain" ? "selected" : ""} aria-pressed={mode === "plain"} onClick={() => setMode("plain")}>Plain English</button></div></div><div className="flow-wrap" role="region" aria-label={`${diagram.title} diagram`}><ReactFlow nodes={nodes} edges={edges} fitView onNodeClick={(_event, node) => setSelectedElement({ type: "node", id: node.id })} onEdgeClick={(_event, edge) => setSelectedElement({ type: "edge", id: edge.id })}><Background color="#d9d8cf" gap={24} /><Controls /></ReactFlow></div><div className="results-toolbar"><label className="direction-control">Direction<select value={diagram.direction} onChange={(event) => updateDiagram({ direction: event.target.value as DiagramDirection })} disabled={exportState !== "idle"}><option value="TB">Top to bottom</option><option value="LR">Left to right</option><option value="RL">Right to left</option><option value="BT">Bottom to top</option></select></label><button className="secondary-button" onClick={() => void copyExport("mermaid")} disabled={exportState !== "idle"}>Copy Mermaid</button><button className="primary-button" onClick={() => void copyExport("markdown")} disabled={exportState !== "idle"}>Copy README Markdown</button>{exportState !== "idle" ? <span className="export-status" role="status" aria-live="polite">{exportState === "saving" ? "Saving changes before export…" : "Generating export…"}</span> : null}{exportError ? <p className="export-error" role="alert">{exportError}</p> : null}</div><EvidenceSection evidence={evidence} /></div>
@@ -389,7 +617,12 @@ function StoryFirstWorkspace(props: StoryFirstWorkspaceProps): React.JSX.Element
     <ArchitectureStoryIntro repositoryName={analysis.repository.name} story={story} />
     <ArchitectureSteps story={story} />
     <CoverageSummary story={story} />
-    <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} />
+    <ProjectExplanationPanel
+      analysisId={analysis.id}
+      evidenceById={evidenceById}
+      initialExplanation={analysis.explanation}
+      initialUnavailable={analysis.explanationUnavailable}
+    />
     <div className="diagram-toolbar page-width"><strong>Diagram workspace</strong><span className={saved ? "save-state" : "save-state unsaved"}>{feedback || (saved ? "Saved" : "Unsaved changes")}</span><button aria-label="Undo" className="toolbar-button" onClick={onUndo} disabled={exportState !== "idle"}>Undo</button><button aria-label="Redo" className="toolbar-button" onClick={onRedo} disabled={exportState !== "idle"}>Redo</button><button className="toolbar-button" onClick={onReset} disabled={exportState !== "idle"}>Reset</button><button className="primary-button" onClick={onSave} disabled={saved || exportState !== "idle"}>Save changes</button></div>
     <section className="results-layout page-width"><aside className="diagram-sidebar"><p className="eyebrow"><span className="eyebrow-line" /> Story maps</p><h1>{analysis.repository.name}</h1><p className="sidebar-description">Start with the simplified overview, then open a request or authentication flow for more detail.</p><div className="diagram-list" aria-label="Available story maps">{availableDiagrams.map((item, index) => <button key={item.id} aria-label={`${DIAGRAM_TYPE_LABELS[item.type]}: ${item.title}`} className={`diagram-item ${item.id === diagram.id ? "active" : ""}`} data-diagram-type={item.type} onClick={() => onSelectDiagram(item)}><span className="diagram-index">{String(index + 1).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{DIAGRAM_TYPE_LABELS[item.type]} · {item.nodes.length} nodes · {item.edges.length} connections</small></span><span>→</span></button>)}{analysis.diagramAvailability?.filter((item) => !item.available).map((item) => <div key={item.type} className="unavailable-diagram"><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><small>{item.reason ?? "Not enough evidence to generate this diagram."}</small></div>)}</div><div className="sidebar-note"><span>✦</span><p>Every label is grounded in repository evidence.</p></div></aside>
            <div className="results-main"><div className="results-title"><div><p className="eyebrow"><span className="eyebrow-line" /> {diagram.type === "system-overview" ? "Start here" : "Interactive preview"}</p><h2>{diagram.title}</h2><p>{diagram.description}</p></div><div className="toggle" role="group" aria-label="Label language"><button className={mode === "technical" ? "selected" : ""} aria-pressed={mode === "technical"} onClick={() => onModeChange("technical")}>Technical</button><button className={mode === "plain" ? "selected" : ""} aria-pressed={mode === "plain"} onClick={() => onModeChange("plain")}>Plain English</button></div></div><HowToReadDiagram /><div className="flow-wrap" role="region" aria-label={`${diagram.title} diagram`}><ReactFlow nodes={nodes} edges={edges} fitView onNodeClick={(_event, node) => onSelect({ type: "node", id: node.id })} onEdgeClick={(_event, edge) => onSelect({ type: "edge", id: edge.id })}><Background color="#d9d8cf" gap={24} /><Controls /></ReactFlow></div><div className="results-toolbar"><label className="direction-control">Direction<select value={diagram.direction} onChange={(event) => onDiagramChange({ direction: event.target.value as DiagramDirection })} disabled={exportState !== "idle"}><option value="TB">Top to bottom</option><option value="LR">Left to right</option><option value="RL">Right to left</option><option value="BT">Bottom to top</option></select></label><label className="summary-export-option"><input type="checkbox" checked={includeArchitectureSummary} onChange={(event) => onIncludeArchitectureSummaryChange(event.target.checked)} disabled={exportState !== "idle"} /> Include plain-English architecture summary</label><button className="secondary-button" onClick={() => void onCopyExport("mermaid")} disabled={exportState !== "idle"}>Copy Mermaid</button><button className="primary-button" onClick={() => void onCopyExport("markdown")} disabled={exportState !== "idle"}>Copy README Markdown</button>{exportState !== "idle" ? <span className="export-status" role="status" aria-live="polite">{exportState === "saving" ? "Saving changes before export…" : "Generating export…"}</span> : null}{exportError ? <p className="export-error" role="alert">{exportError}</p> : null}</div><EvidenceSection evidence={evidence} /></div>
@@ -398,15 +631,47 @@ function StoryFirstWorkspace(props: StoryFirstWorkspaceProps): React.JSX.Element
   </main>;
 }
 
-function StoryWithoutDiagram({ analysis, story, evidenceById }: { analysis: AnalysisResponse; story: ArchitectureStory; evidenceById: ReadonlyMap<string, EvidenceReference> }): React.JSX.Element {
+function StoryWithoutDiagram({
+  analysis,
+  story,
+  evidenceById,
+  availability,
+  onLoadStructureFallback,
+}: {
+  analysis: AnalysisResponse;
+  story: ArchitectureStory;
+  evidenceById: ReadonlyMap<string, EvidenceReference>;
+  availability?: AnalysisJob["diagramAvailability"];
+  onLoadStructureFallback?: () => void;
+}): React.JSX.Element {
   const isEmpty = story.coverage.status === "empty";
   return <main className="analysis-page">
     <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{analysis.repository.owner}/{analysis.repository.name}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
     <ArchitectureStoryIntro repositoryName={analysis.repository.name} story={story} />
     <ArchitectureSteps story={story} />
     <CoverageSummary story={story} />
-    <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} />
-    <StateCard title={isEmpty ? "No evidence-backed map is available." : "No visual map is available."} message={isEmpty ? story.plainEnglishSummary : "The plain-English story is available, but no supported diagram was generated from the analyzed evidence."} details={<AvailabilityList availability={analysis.diagramAvailability} />} />
+    <ProjectExplanationPanel
+      analysisId={analysis.id}
+      evidenceById={evidenceById}
+      initialExplanation={analysis.explanation}
+      initialUnavailable={analysis.explanationUnavailable}
+    />
+    <StateCard
+      title={isEmpty ? "No evidence-backed map is available." : "No visual map is available."}
+      message={isEmpty ? story.plainEnglishSummary : "The plain-English story is available, but no supported diagram was generated from the analyzed evidence."}
+      details={<AvailabilityList availability={availability ?? analysis.diagramAvailability} />}
+      action={onLoadStructureFallback ? (
+        <div style={{ marginTop: "20px" }}>
+          <button
+            className="secondary-button"
+            data-testid="load-structure-fallback"
+            onClick={onLoadStructureFallback}
+          >
+            Show repository structure fallback
+          </button>
+        </div>
+      ) : undefined}
+    />
   </main>;
 }
 
@@ -505,7 +770,7 @@ function VisibilityButton({ visible, onClick }: { visible: boolean; onClick: () 
 function EvidenceSection({ evidence }: { evidence: Array<{ id: string; filePath: string; lineStart?: number; reason: string; excerpt?: string }> }): React.JSX.Element { return <section className="evidence-section"><div><p className="eyebrow"><span className="eyebrow-line" /> Evidence</p><h3>Why this map exists</h3></div><div className="evidence-panel">{evidence.length ? evidence.map((item) => <article key={item.id}><strong>{item.filePath}{item.lineStart ? `:${item.lineStart}` : ""}</strong><p>{item.reason}</p>{item.excerpt ? <code>{item.excerpt}</code> : null}</article>) : <p className="muted">No source references were collected.</p>}</div></section>; }
 function AvailabilityList({ availability }: { availability?: AnalysisJob["diagramAvailability"] }): React.JSX.Element | null { const unavailable = availability?.filter((item) => !item.available) ?? []; return unavailable.length ? <div className="availability-list" aria-label="Diagram availability reasons">{unavailable.map((item) => <p key={item.type}><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><span>{item.reason ?? "Not enough evidence to generate this diagram."}</span></p>)}</div> : null; }
 function StateCard({ title, message, action, details }: { title: string; message: string; action?: React.ReactNode; details?: React.ReactNode }): React.JSX.Element { return <section className="state-card page-width" role="status" aria-live="polite"><span className="state-symbol" aria-hidden="true">!</span><h1>{title}</h1><p>{message}</p>{details}{action}</section>; }
-function ProgressState({ progress, stage, message, action }: { progress: number; stage: string; message?: string; action?: React.ReactNode }): React.JSX.Element {
+function ProgressState({ progress, stage, message, action, workerStatus }: { progress: number; stage: string; message?: string; action?: React.ReactNode; workerStatus?: "active" | "offline" | "idle" }): React.JSX.Element {
   const labels: Record<string, string> = {
     validating: "Checking the repository URL",
     "validating-input": "Checking the repository URL",
@@ -533,6 +798,12 @@ function ProgressState({ progress, stage, message, action }: { progress: number;
       <p className="eyebrow"><span className="eyebrow-line" /> Building your story</p>
       <h1>{message || labels[stage] || "Reading your repository"}<span className="animated-dots">…</span></h1>
       <p>We’re tracing the important paths so the result stays useful, not noisy.</p>
+      {workerStatus === "offline" ? (
+        <div className="worker-offline-indicator" data-testid="worker-offline-indicator" role="status">
+          <span className="worker-offline-indicator-dot" aria-hidden="true" />
+          <span>Worker offline — no heartbeat received recently</span>
+        </div>
+      ) : null}
       <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(safeProgress)}>
         <span style={{ width: `${Math.max(6, safeProgress)}%` }} />
       </div>

@@ -42,6 +42,7 @@ function rowToJob(row: JsonRecord): AnalysisJobRecord {
     expiresAt: String(row.expires_at),
     retryCount: Number(row.retry_count),
     explanationRequested: Boolean(row.explanation_requested),
+    ...(typeof row.heartbeat_at === "string" ? { heartbeatAt: row.heartbeat_at } : {}),
     ...(typeof row.cancellation_requested === "boolean" ? { cancellationRequested: row.cancellation_requested } : {}),
     ...(isRecord(row.error) ? { error: row.error as unknown as AnalysisJobRecord["error"] } : {}),
     ...(isRecord(row.coverage) ? { coverage: row.coverage as unknown as AnalysisJobRecord["coverage"] } : {}),
@@ -66,6 +67,7 @@ function jobToRow(job: AnalysisJobRecord): JsonRecord {
     expires_at: job.expiresAt,
     retry_count: job.retryCount,
     explanation_requested: job.explanationRequested,
+    heartbeat_at: job.heartbeatAt ?? null,
     cancellation_requested: job.cancellationRequested ?? null,
     error: job.error ?? null,
     coverage: job.coverage ?? null,
@@ -149,7 +151,17 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   public async createOrReuseJob(job: AnalysisJobRecord): Promise<{ job: AnalysisJobRecord; created: boolean }> {
     const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
     if (reusable) return { job: reusable, created: false };
-    return { job: await this.createJob(job), created: true };
+
+    try {
+      const created = await this.createJob(job);
+      return { job: created, created: true };
+    } catch (err: unknown) {
+      // If a concurrent request raced and inserted an active job for the same owner and cache key,
+      // re-query and return the existing active job instead of throwing or duplicating.
+      const raced = await this.findReusableJob(job.cacheKey, job.ownerId);
+      if (raced) return { job: raced, created: false };
+      throw err;
+    }
   }
 
   public async getJob(jobId: string, ownerId?: string): Promise<AnalysisJobRecord | undefined> {
@@ -164,6 +176,46 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
     const updated = redactPathValues({ ...current, ...patch, updatedAt: patch.updatedAt ?? nowIso() });
     await this.upsertJob(updated);
     return structuredClone(updated);
+  }
+
+  public async updateJobIfStatus(
+    jobId: string,
+    patch: AnalysisJobPatch,
+    expectedStatuses: AnalysisJobRecord["status"][],
+    ownerId?: string,
+  ): Promise<{ won: boolean; job?: AnalysisJobRecord }> {
+    const params = new URLSearchParams({
+      job_id: `eq.${jobId}`,
+      status: `in.(${expectedStatuses.join(",")})`,
+    });
+    if (ownerId) params.set("owner_id", `eq.${ownerId}`);
+
+    const rowPatch: JsonRecord = {
+      updated_at: patch.updatedAt ?? nowIso(),
+    };
+    if (patch.status !== undefined) rowPatch.status = patch.status;
+    if (patch.stage !== undefined) rowPatch.stage = patch.stage;
+    if (patch.progress !== undefined) rowPatch.progress = patch.progress;
+    if (patch.message !== undefined) rowPatch.message = patch.message;
+    if (patch.error !== undefined) rowPatch.error = patch.error;
+    if (patch.heartbeatAt !== undefined) rowPatch.heartbeat_at = patch.heartbeatAt;
+
+    const rows = asRows<JsonRecord>(await this.request<unknown>(
+      "conditional updating analysis job",
+      "repo_story_jobs",
+      {
+        method: "PATCH",
+        headers: { Prefer: "return=representation" },
+        body: JSON.stringify(rowPatch),
+      },
+      params.toString(),
+    ));
+
+    if (rows.length > 0 && rows[0]) {
+      return { won: true, job: rowToJob(rows[0]) };
+    }
+    const current = await this.job(jobId, ownerId);
+    return { won: false, job: current };
   }
 
   public async findReusableJob(cacheKey: string, ownerId: string, now = Date.now()): Promise<AnalysisJobRecord | undefined> {
@@ -181,8 +233,38 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
   public async markExpiredJobs(now = Date.now()): Promise<number> {
     const params = new URLSearchParams({ select: "*", expires_at: `lte.${new Date(now).toISOString()}`, status: "in.(queued,fetching,analyzing,explaining)" });
     const expired = await this.jobs(params.toString());
-    for (const job of expired) await this.updateJob(job.jobId, { status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: false } });
+    for (const job of expired) await this.updateJob(job.jobId, { status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: true } });
     return expired.length;
+  }
+
+  public async recoverStuckJobs(now = Date.now(), timeoutMs = 120_000): Promise<AnalysisJobRecord[]> {
+    const params = new URLSearchParams({ select: "*", status: "in.(fetching,analyzing,explaining)" });
+    const candidates = await this.jobs(params.toString());
+    const recovered: AnalysisJobRecord[] = [];
+    for (const job of candidates) {
+      const lastActivityTime = job.heartbeatAt
+        ? new Date(job.heartbeatAt).getTime()
+        : new Date(job.updatedAt || job.createdAt).getTime();
+      if (!isNaN(lastActivityTime) && now - lastActivityTime > timeoutMs) {
+        const updated = await this.updateJob(job.jobId, {
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: "Analysis worker stopped responding",
+          error: {
+            code: "JOB_STALLED",
+            stage: "analyze",
+            message: "Analysis worker stopped responding",
+            reason: "The background analysis worker stopped reporting heartbeats.",
+            hint: "You can retry this analysis now.",
+            retryable: true,
+          },
+          updatedAt: new Date(now).toISOString(),
+        });
+        if (updated) recovered.push(updated);
+      }
+    }
+    return recovered;
   }
 
   public async deleteExpiredJobs(now = Date.now()): Promise<number> {
@@ -205,7 +287,7 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveAnalysisResult(result: AnalysisResult, ownerId?: string): Promise<boolean> {
     const job = await this.getJobByAnalysisId(result.id, ownerId) ?? await this.job(result.id, ownerId);
-    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return false;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested)) return false;
     if (job && ownerId && job.ownerId !== ownerId) return false;
     await this.request("saving analysis result", "repo_story_results", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ analysis_id: result.id, owner_id: job?.ownerId ?? ownerId ?? "system", result: redactPathValues(result), updated_at: nowIso() }) });
     if (job && job.analysisId !== result.id) await this.upsertJob({ ...job, analysisId: result.id, updatedAt: nowIso() });
@@ -222,7 +304,7 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveExplanation(analysisId: string, explanation: ProjectExplanation, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested) return;
+    if (!job || job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested) return;
     await this.request("saving explanation", "repo_story_explanations", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ analysis_id: analysisId, owner_id: job.ownerId, explanation: redactPathValues(explanation), unavailable: null, updated_at: nowIso() }) });
   }
 
@@ -257,9 +339,10 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveAnalysisDiagram(diagram: Diagram, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(diagram.analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested) return;
-    const existing = await this.diagramRow(diagram.id, job.ownerId);
-    await this.request("saving diagram", "repo_story_diagrams", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ diagram_id: diagram.id, analysis_id: diagram.analysisId, owner_id: job.ownerId, diagram: redactPathValues(diagram), original_diagram: existing?.original_diagram ?? redactPathValues(diagram), updated_at: nowIso() }) });
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return;
+    const effectiveOwner = job?.ownerId ?? ownerId ?? "system";
+    const existing = await this.diagramRow(diagram.id, effectiveOwner);
+    await this.request("saving diagram", "repo_story_diagrams", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ diagram_id: diagram.id, analysis_id: diagram.analysisId, owner_id: effectiveOwner, diagram: redactPathValues(diagram), original_diagram: existing?.original_diagram ?? redactPathValues(diagram), updated_at: nowIso() }) });
   }
 
   public async getAnalysisDiagram(diagramId: string, ownerId?: string): Promise<Diagram | undefined> {

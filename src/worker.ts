@@ -1,3 +1,7 @@
+import { loadEnvConfig } from "@next/env";
+// Load .env and .env.local if running outside Next.js
+loadEnvConfig(process.cwd());
+
 import http from "node:http";
 
 // Register module alias resolution before importing @/... modules
@@ -22,7 +26,7 @@ import { assertProductionGuards } from "@/config/production-guards";
 
 assertProductionGuards();
 
-import { jobQueue, analysisRepository, analysisJobRunner } from "@/composition/container";
+import { jobQueue, analysisRepository, analysisJobRunner, cacheStore } from "@/composition/container";
 import { JobWorker } from "@/application/jobs/job-worker";
 import type { JobQueueItem } from "@/application/jobs/job-queue";
 import { logger } from "@/shared/logger";
@@ -30,17 +34,20 @@ import { initSentry } from "@/shared/sentry";
 
 initSentry();
 
-// Process-level guards against silent termination
+const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
+logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
+
+import { activeJobIds, failActiveJobsOnCrash } from "@/application/jobs/worker-crash-handler";
+import { jobTokenRegistry, decryptToken, type EncryptedTokenPayload } from "@/infrastructure/jobs/job-token-registry";
+
+// Process-level guards against silent termination: await mark-failed write before exit(1)
 process.on("unhandledRejection", (reason) => {
-  console.error("[RepoStory Worker] Unhandled promise rejection:", reason);
+  void failActiveJobsOnCrash("unhandledRejection", reason, analysisRepository, jobQueue, workerId);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("[RepoStory Worker] Uncaught exception:", error);
+  void failActiveJobsOnCrash("uncaughtException", error, analysisRepository, jobQueue, workerId);
 });
-
-const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
-logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
 const pollIntervalMs = process.env.WORKER_POLL_INTERVAL_MS ? Number(process.env.WORKER_POLL_INTERVAL_MS) : 1_000;
 const heartbeatIntervalMs = process.env.WORKER_HEARTBEAT_INTERVAL_MS ? Number(process.env.WORKER_HEARTBEAT_INTERVAL_MS) : 15_000;
@@ -54,8 +61,46 @@ const concurrency = process.env.WORKER_CONCURRENCY ? Number(process.env.WORKER_C
  * continues polling without silently crashing.
  */
 export async function processJob(item: JobQueueItem): Promise<void> {
+  activeJobIds.add(item.jobId);
   console.log(`[Worker] Starting validation for job ${item.jobId}`);
+  let encrypted = (item.payload?.encryptedToken as EncryptedTokenPayload | undefined);
+  if (!encrypted) {
+    try {
+      encrypted = await cacheStore.get<EncryptedTokenPayload>(`job-token:${item.jobId}`);
+    } catch { /* ignore */ }
+  }
+
+  if (encrypted) {
+    try {
+      const decrypted = decryptToken(encrypted);
+      jobTokenRegistry.set(item.jobId, { token: decrypted, expiresAt: Date.now() + 15 * 60 * 1000 });
+    } catch (err) {
+      console.error(`[Worker] Failed to decrypt token for job ${item.jobId}:`, err);
+    }
+  }
   try {
+    const existingJob = await analysisRepository.getJob(item.jobId);
+    if (existingJob?.status === "completed") {
+      console.log(`[Worker] Job ${item.jobId} already completed, clearing queue item.`);
+      await jobQueue.complete(item.jobId, workerId);
+      return;
+    }
+    if (existingJob?.status === "cancelled") {
+      console.log(`[Worker] Job ${item.jobId} was cancelled, cancelling queue item.`);
+      await jobQueue.cancel(item.jobId);
+      return;
+    }
+    if (existingJob?.status === "failed" || existingJob?.status === "expired") {
+      console.log(`[Worker] Job ${item.jobId} already ${existingJob.status}, finalizing queue item.`);
+      await jobQueue.fail(item.jobId, workerId, {
+        code: existingJob.error?.code || "JOB_FAILED",
+        stage: existingJob.stage,
+        message: existingJob.message || `Job already in terminal state ${existingJob.status}.`,
+        retryable: false,
+      });
+      return;
+    }
+
     await analysisJobRunner.runNow(item.jobId);
     console.log(`[Worker] Validation complete for job ${item.jobId}`);
 
@@ -91,6 +136,9 @@ export async function processJob(item: JobQueueItem): Promise<void> {
         message: failureMessage,
         error: {
           code: "WORKER_CRASHED",
+          stage: "analyze",
+          reason: failureMessage,
+          hint: "Check worker logs for unhandled exception or crash details.",
           message: failureMessage,
           retryable: false,
           details: error instanceof Error ? { name: error.name, ...(error.stack ? { stack: error.stack } : {}) } : undefined,
@@ -105,12 +153,19 @@ export async function processJob(item: JobQueueItem): Promise<void> {
     try {
       await jobQueue.fail(item.jobId, workerId, {
         code: "WORKER_CRASHED",
+        stage: "analyze",
+        reason: failureMessage,
+        hint: "Check worker logs for unhandled exception or crash details.",
         message: failureMessage,
         retryable: false,
       });
     } catch (queueErr) {
       console.error(`[Worker] Failed to mark job ${item.jobId} as failed in queue:`, queueErr);
     }
+  } finally {
+    jobTokenRegistry.delete(item.jobId);
+    void cacheStore.delete(`job-token:${item.jobId}`).catch(() => {});
+    activeJobIds.delete(item.jobId);
   }
 }
 
@@ -122,6 +177,36 @@ const worker = new JobWorker(jobQueue, analysisRepository, analysisJobRunner, {
   processJob,
 });
 
+async function startupSweep(): Promise<void> {
+  console.log(`[RepoStory Worker ${workerId}] Running startup sweep for orphaned or stuck jobs...`);
+  try {
+    if (analysisRepository.recoverStuckJobs) {
+      const recovered = await analysisRepository.recoverStuckJobs();
+      if (recovered.length > 0) {
+        console.log(`[RepoStory Worker ${workerId}] Recovered ${recovered.length} stuck jobs during startup sweep.`);
+        for (const job of recovered) {
+          try {
+            const queueItem = await jobQueue.get(job.jobId);
+            if (queueItem && queueItem.status === "running") {
+              await jobQueue.fail(job.jobId, queueItem.workerId ?? workerId, {
+                code: "JOB_STALLED",
+                stage: "analyze",
+                message: "Analysis worker stopped responding",
+                retryable: true,
+              });
+            }
+          } catch { /* ignore */ }
+        }
+      }
+    }
+  } catch (err) {
+    console.error(`[RepoStory Worker ${workerId}] Startup sweep failed:`, err);
+  }
+}
+
+void startupSweep().catch((err) => {
+  console.error(`[RepoStory Worker ${workerId}] Startup sweep uncaught error:`, err);
+});
 worker.start();
 
 const shutdown = async (signal: string) => {
@@ -131,5 +216,13 @@ const shutdown = async (signal: string) => {
   process.exit(0);
 };
 
-process.on("SIGTERM", () => void shutdown("SIGTERM"));
-process.on("SIGINT", () => void shutdown("SIGINT"));
+process.on("SIGTERM", () => {
+  void shutdown("SIGTERM").catch((err) => {
+    console.error(`[RepoStory Worker ${workerId}] Error during SIGTERM shutdown:`, err);
+  });
+});
+process.on("SIGINT", () => {
+  void shutdown("SIGINT").catch((err) => {
+    console.error(`[RepoStory Worker ${workerId}] Error during SIGINT shutdown:`, err);
+  });
+});

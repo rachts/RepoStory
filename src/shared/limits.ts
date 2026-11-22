@@ -7,14 +7,16 @@ export const DEFAULT_LIMITS = {
   maxPathLength: 4_096,
   maxEvidenceExcerpt: 1_000,
   maxTreeEntries: 10_000,
+  maxPreflightFiles: 10_000,
   maxImportCandidates: 256,
   maxConcurrentContentRequests: 10,
-  maxAnalysisMs: 120_000,
+  maxAnalysisMs: 50_000,
 } as const;
 export const DEFAULT_STORE_LIMITS = {
   maxAnalyses: 100,
   ttlMs: 60 * 60 * 1000,
 } as const;
+export const DEFAULT_MAX_HEAP_BYTES = 350 * 1024 * 1024;
 export type AnalysisLimits = {
   maxFiles: number;
   maxFileBytes: number;
@@ -25,6 +27,7 @@ export type AnalysisLimits = {
   maxEvidenceExcerpt: number;
   maxTreeEntries?: number;
   maxTreeEntriesCeiling?: number;
+  maxPreflightFiles?: number;
   maxImportCandidates?: number;
   maxConcurrentContentRequests?: number;
   maxConcurrentGitHubContentRequests?: number;
@@ -33,6 +36,7 @@ export type AnalysisLimits = {
 
 export interface AnalysisBudget {
   check(): void;
+  remainingMs?(): number;
 }
 
 export function createAnalysisBudget(maxMs: number, now: () => number = Date.now, signal?: AbortSignal): AnalysisBudget {
@@ -41,6 +45,9 @@ export function createAnalysisBudget(maxMs: number, now: () => number = Date.now
   return {
     check(): void {
       if (signal?.aborted || now() >= deadline) throw new AppError({ code: "ANALYSIS_TIMEOUT", message: "The analysis exceeded its time limit.", retryable: true });
+    },
+    remainingMs(): number {
+      return Math.max(0, deadline - now());
     },
   };
 }

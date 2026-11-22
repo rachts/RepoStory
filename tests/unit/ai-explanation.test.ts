@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildExplanationInput, collectExplanationEvidenceIds } from "@/application/ai/build-explanation-input";
 import type { AnalysisJob } from "@/domain/analysis";
-import { groqProjectExplanationJsonSchema, projectExplanationJsonSchema, projectExplanationSchema, unknownExplanationEvidenceIds, type ProjectExplanation } from "@/domain/ai-explanation";
+import { groqProjectExplanationJsonSchema, projectExplanationJsonSchema, projectExplanationSchema, sanitizeProjectExplanation, unknownExplanationEvidenceIds, type ProjectExplanation } from "@/domain/ai-explanation";
 import type { Diagram } from "@/domain/diagram";
 import type { AnalysisFinding } from "@/domain/finding";
 import { generateProjectExplanation } from "@/infrastructure/ai/groq-client";
@@ -115,6 +115,108 @@ describe("AI explanation contracts", () => {
     expect(JSON.stringify(groqProjectExplanationJsonSchema)).not.toContain("minLength");
     expect(JSON.stringify(groqProjectExplanationJsonSchema)).not.toContain("maxLength");
   });
+
+  it("sanitizes imperfect LLM outputs to satisfy projectExplanationSchema", () => {
+    const rawImperfect = {
+      unexpectedTopLevel: true,
+      projectSummary: {
+        title: "  Valid Title  ",
+        oneSentence: "A valid one sentence description.",
+        plainEnglish: "A".repeat(4000), // > 3000 chars -> clamped
+        evidenceIds: ["ev-1", "", "ev-2"],
+        confidence: "moderate", // non-standard -> coerced to medium
+        extraField: "ignored",
+      },
+      architectureAtAGlance: {
+        plainEnglish: "Overview",
+        layers: null, // null -> defaulted to []
+        evidenceIds: ["ev-1"],
+      },
+      mainComponents: [
+        {
+          name: "Comp 1",
+          simpleName: "Comp 1",
+          whatItDoes: "Does stuff",
+          whyItMatters: "Matters",
+          location: "src/index.ts",
+          evidenceIds: ["ev-1"],
+          confidence: "needs_verification", // underscore -> hyphen
+        },
+      ],
+      howTheSystemWorks: [
+        {
+          step: "1", // string -> coerced to 1
+          title: "Step 1",
+          plainEnglish: "Step plain",
+          technicalDetail: "Step tech",
+          evidenceIds: ["ev-1"],
+          confidence: "high",
+        },
+      ],
+      userJourney: null,
+      technologyGuide: [],
+      apiGuide: [],
+      dataAndIntegrations: [
+        {
+          name: "Postgres",
+          type: "sql_db", // invalid enum -> unknown
+          simplePurpose: "Stores data",
+          evidenceIds: ["ev-1"],
+          confidence: "high",
+        },
+      ],
+      securityAndAuthentication: {
+        plainEnglish: "Security",
+        confirmedControls: null,
+        unknowns: null,
+        evidenceIds: [],
+        confidence: "high",
+      },
+      glossary: null,
+      knownLimitations: null,
+      confidenceNote: "Notes",
+    };
+
+    const sanitized = sanitizeProjectExplanation(rawImperfect);
+    const parsed = projectExplanationSchema.safeParse(sanitized);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.projectSummary.title).toBe("Valid Title");
+      expect(parsed.data.projectSummary.confidence).toBe("medium");
+      expect(parsed.data.projectSummary.plainEnglish.length).toBeLessThanOrEqual(3000);
+      expect(parsed.data.mainComponents[0]?.confidence).toBe("needs-verification");
+      expect(parsed.data.howTheSystemWorks[0]?.step).toBe(1);
+      expect(parsed.data.dataAndIntegrations[0]?.type).toBe("unknown");
+      expect(parsed.data.userJourney).toEqual([]);
+      expect(parsed.data.glossary).toEqual([]);
+    }
+  });
+
+  it("fails closed without inventing prose when a required field is empty", () => {
+    const rawMissingProse = {
+      projectSummary: {
+        title: "Valid Title",
+        oneSentence: "", // empty string -> not invented
+        plainEnglish: "Plain English",
+        evidenceIds: [],
+        confidence: "high",
+      },
+      architectureAtAGlance: { plainEnglish: "Arch", layers: [], evidenceIds: [] },
+      mainComponents: [],
+      howTheSystemWorks: [],
+      userJourney: [],
+      technologyGuide: [],
+      apiGuide: [],
+      dataAndIntegrations: [],
+      securityAndAuthentication: { plainEnglish: "Sec", confirmedControls: [], unknowns: [], evidenceIds: [], confidence: "high" },
+      glossary: [],
+      knownLimitations: [],
+      confidenceNote: "Note",
+    };
+    const sanitized = sanitizeProjectExplanation(rawMissingProse);
+    const parsed = projectExplanationSchema.safeParse(sanitized);
+    expect(parsed.success).toBe(false);
+  });
 });
 
 describe("Groq explanation client", () => {
@@ -133,6 +235,51 @@ describe("Groq explanation client", () => {
     }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     const request = groqMock.create.mock.calls.at(-1)?.[0] as { messages: Array<{ content?: string }> };
     expect(request.messages[0]?.content).toContain("{\"repository\":{}}");
+  });
+
+  it("retries once when initial output is invalid after normalization and retry succeeds", async () => {
+    groqMock.create.mockClear();
+    // First attempt returns schema-invalid JSON (missing required projectSummary fields)
+    groqMock.create
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ invalid: true }) } }] })
+      // Second attempt returns valid explanation
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify(explanation()) } }] });
+
+    const result = await generateProjectExplanation("{\"repository\":{}}", { apiKey: "test-key", model: "openai/gpt-oss-120b", timeoutMs: 10_000, enabled: true });
+
+    expect(result).toEqual(explanation());
+    expect(groqMock.create).toHaveBeenCalledTimes(2);
+    // Check that retry message includes warning about failing fields without disclosing values
+    const secondCall = groqMock.create.mock.calls[1]?.[0] as { messages: Array<{ role: string; content?: string }> };
+    const retryUserMsg = secondCall.messages.find((m) => m.role === "user" && m.content?.includes("failed schema validation"));
+    expect(retryUserMsg?.content).toContain("fields:");
+  });
+
+  it("throws original validation error when retry fails both times", async () => {
+    groqMock.create.mockClear();
+    groqMock.create
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ invalid: "first" }) } }] })
+      .mockResolvedValueOnce({ choices: [{ message: { content: JSON.stringify({ invalid: "second" }) } }] });
+
+    await expect(generateProjectExplanation("{\"repository\":{}}", { apiKey: "test-key", model: "openai/gpt-oss-120b", timeoutMs: 10_000, enabled: true }))
+      .rejects.toMatchObject({
+        code: "AI_INVALID_RESPONSE",
+        message: "The AI explanation response did not match the required schema.",
+      });
+    expect(groqMock.create).toHaveBeenCalledTimes(2);
+  });
+
+  it("handles cut off response when finish_reason is length", async () => {
+    groqMock.create.mockClear();
+    groqMock.create.mockResolvedValueOnce({
+      choices: [{ message: { content: "{\"projectSummary\": {" }, finish_reason: "length" }],
+    });
+
+    await expect(generateProjectExplanation("{\"repository\":{}}", { apiKey: "test-key", model: "openai/gpt-oss-120b", timeoutMs: 1_000, enabled: true }))
+      .rejects.toMatchObject({
+        code: "AI_INVALID_RESPONSE",
+        message: expect.stringContaining("cut off"),
+      });
   });
 
   it("fails closed when disabled or unconfigured", async () => {

@@ -8,6 +8,11 @@ export const authOptions: AuthOptions = {
       // Fallback mock credentials allow offline tests and local development without GitHub OAuth configured.
       clientId: process.env.GITHUB_CLIENT_ID ?? "mock-client-id",
       clientSecret: process.env.GITHUB_CLIENT_SECRET ?? "mock-client-secret",
+      authorization: {
+        params: {
+          scope: "read:user user:email repo",
+        },
+      },
     }),
   ],
   session: {
@@ -18,11 +23,17 @@ export const authOptions: AuthOptions = {
       if (token?.sub && session.user) {
         (session.user as { id?: string }).id = token.sub;
       }
+      if (token?.accessToken) {
+        (session as { accessToken?: string }).accessToken = token.accessToken as string;
+      }
       return session;
     },
-    async jwt({ token, user }) {
+    async jwt({ token, user, account }) {
       if (user) {
         token.sub = user.id;
+      }
+      if (account?.access_token) {
+        token.accessToken = account.access_token;
       }
       return token;
     },

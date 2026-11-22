@@ -28,8 +28,11 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
     : analysisStore.get(analysisId);
   if (!analysis) return jsonResponse({ error: { code: "ANALYSIS_NOT_FOUND", message: "Analysis not found.", retryable: false } }, { status: 404 });
 
-  const diagrams = anyJob
+  let diagrams = anyJob
     ? await analysisRepository.listAnalysisDiagrams(analysisId, ownerId)
     : analysisStore.listDiagrams(analysisId);
+  if (!diagrams.length) {
+    diagrams = analysisStore.listDiagrams(analysisId);
+  }
   return jsonResponse(redactPathValues({ ...analysis, diagrams }));
 }

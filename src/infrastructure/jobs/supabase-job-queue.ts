@@ -53,12 +53,16 @@ export class SupabaseJobQueue implements JobQueue {
       heartbeatAt: typeof row.heartbeat_at === "string" ? row.heartbeat_at : undefined,
       availableAt: String(row.available_at ?? row.created_at),
       error: (row.error as JobQueueError) ?? undefined,
+      payload: (row.payload as Record<string, unknown>) ?? null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
   }
 
-  public async enqueue(jobId: string, options?: { availableAt?: Date; maxAttempts?: number }): Promise<JobQueueItem> {
+  public async enqueue(
+    jobId: string,
+    options?: { availableAt?: Date; maxAttempts?: number; payload?: Record<string, unknown> },
+  ): Promise<JobQueueItem> {
     const now = new Date().toISOString();
     const item: Record<string, unknown> = {
       id: opaqueId("qitem"),
@@ -67,15 +71,25 @@ export class SupabaseJobQueue implements JobQueue {
       attempts: 0,
       max_attempts: options?.maxAttempts ?? this.maxAttempts,
       available_at: options?.availableAt ? options.availableAt.toISOString() : now,
+      ...(options?.payload ? { payload: options.payload } : {}),
       created_at: now,
       updated_at: now,
     };
 
-    const response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
+    let response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
       method: "POST",
       headers: { ...this.headers(), Prefer: "return=representation,resolution=merge-duplicates" },
       body: JSON.stringify(item),
     });
+
+    if (!response.ok && item.payload) {
+      delete item.payload;
+      response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
+        method: "POST",
+        headers: { ...this.headers(), Prefer: "return=representation,resolution=merge-duplicates" },
+        body: JSON.stringify(item),
+      });
+    }
 
     if (!response.ok) {
       throw new AppError({
@@ -112,7 +126,7 @@ export class SupabaseJobQueue implements JobQueue {
     const now = new Date().toISOString();
     const expiredHeartbeat = new Date(Date.now() - this.heartbeatTimeoutMs).toISOString();
 
-    const fetchUrl = `${this.baseUrl}/repo_story_job_queue?or=(and(status.eq.queued,available_at.lte.${now}),and(status.eq.running,heartbeat_at.lt.${expiredHeartbeat}))&order=available_at.asc&limit=1`;
+    const fetchUrl = `${this.baseUrl}/repo_story_job_queue?or=(and(status.eq.queued,available_at.lte.${encodeURIComponent(now)}),and(status.eq.running,heartbeat_at.lt.${encodeURIComponent(expiredHeartbeat)}))&order=available_at.asc&limit=1`;
     const getRes = await this.fetchImpl(fetchUrl, {
       method: "GET",
       headers: this.headers(),
@@ -124,7 +138,7 @@ export class SupabaseJobQueue implements JobQueue {
 
     const target = candidates[0];
     const updateRes = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${target.job_id}&updated_at=eq.${target.updated_at}`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(String(target.job_id))}&updated_at=eq.${encodeURIComponent(String(target.updated_at))}`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -147,7 +161,7 @@ export class SupabaseJobQueue implements JobQueue {
   public async heartbeat(jobId: string, workerId: string): Promise<boolean> {
     const now = new Date().toISOString();
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}&worker_id=eq.${workerId}&status=eq.running`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}&worker_id=eq.${encodeURIComponent(workerId)}&status=eq.running`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -166,7 +180,7 @@ export class SupabaseJobQueue implements JobQueue {
   public async complete(jobId: string, workerId: string): Promise<boolean> {
     const now = new Date().toISOString();
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}&worker_id=eq.${workerId}&status=eq.running`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}&worker_id=eq.${encodeURIComponent(workerId)}&status=eq.running`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -189,7 +203,12 @@ export class SupabaseJobQueue implements JobQueue {
     retryAt?: Date,
   ): Promise<boolean> {
     const current = await this.get(jobId);
-    if (!current || current.status !== "running" || current.workerId !== workerId) {
+    if (!current || current.status !== "running") {
+      return false;
+    }
+    const isOwner = !current.workerId || current.workerId === workerId;
+    const isSweeper = workerId.includes("sweeper") || workerId === "startup-sweep";
+    if (!isOwner && !isSweeper) {
       return false;
     }
 
@@ -213,8 +232,9 @@ export class SupabaseJobQueue implements JobQueue {
       patch.status = "failed";
     }
 
+    const workerFilter = current.workerId ? `&worker_id=eq.${encodeURIComponent(current.workerId)}` : "";
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}&worker_id=eq.${workerId}`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}${workerFilter}`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -233,7 +253,7 @@ export class SupabaseJobQueue implements JobQueue {
 
     const nowStr = new Date().toISOString();
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -254,7 +274,7 @@ export class SupabaseJobQueue implements JobQueue {
   public async cancel(jobId: string): Promise<boolean> {
     const nowStr = new Date().toISOString();
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}&status=not.in.(succeeded,cancelled)`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}&status=not.in.(succeeded,cancelled)`,
       {
         method: "PATCH",
         headers: this.headers(),
@@ -270,7 +290,7 @@ export class SupabaseJobQueue implements JobQueue {
 
   public async get(jobId: string): Promise<JobQueueItem | undefined> {
     const response = await this.fetchImpl(
-      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${jobId}&limit=1`,
+      `${this.baseUrl}/repo_story_job_queue?job_id=eq.${encodeURIComponent(jobId)}&limit=1`,
       {
         method: "GET",
         headers: this.headers(),

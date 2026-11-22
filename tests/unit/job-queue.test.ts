@@ -5,6 +5,8 @@ import { JobWorker } from "@/application/jobs/job-worker";
 import { AnalysisJobRunner } from "@/application/jobs/analysis-job-runner";
 import { FixtureRepositoryProvider } from "@/infrastructure/providers/fixture-provider";
 import type { AnalysisJobRecord } from "@/domain/analysis";
+import { SupabaseJobQueue } from "@/infrastructure/jobs/supabase-job-queue";
+import { serverConfig } from "@/shared/config";
 
 function createFixtureJob(id = "job-test-1"): AnalysisJobRecord {
   const now = new Date().toISOString();
@@ -201,6 +203,7 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
 
     // Wait for async execution
     await runner.waitForIdle();
+    await worker.waitForIdle();
 
     const completed = await store.getJob("job-worker-1", "session-1");
     expect(completed?.status).toBe("completed");
@@ -239,5 +242,80 @@ describe("Workstream 1: Durable Job Queue & Worker", () => {
 
     const queueItem = await queue.get("job-crash-1");
     expect(queueItem?.status).toBe("failed");
+  });
+
+  it("SupabaseJobQueue safely URL-encodes target.updated_at with + timezone offsets", async () => {
+    let capturedPatchUrl = "";
+    const mockFetch = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+      if (url.includes("/rpc/claim_queue_job")) {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      if (init?.method === "PATCH") {
+        capturedPatchUrl = url;
+        return {
+          ok: true,
+          json: async () => [{
+            id: "qitem-1",
+            job_id: "job-tz-1",
+            status: "running",
+            attempts: 1,
+            max_attempts: 3,
+            updated_at: new Date().toISOString(),
+          }],
+        };
+      }
+      return {
+        ok: true,
+        json: async () => [{
+          id: "qitem-1",
+          job_id: "job-tz-1",
+          attempts: 0,
+          updated_at: "2026-11-16T14:51:33.714629+00:00",
+        }],
+      };
+    });
+
+    const queue = new SupabaseJobQueue({
+      url: "https://example.supabase.co",
+      secretKey: "test-secret",
+      fetchImpl: mockFetch as unknown as typeof fetch,
+    });
+
+    const claimed = await queue.claim("test-worker");
+    expect(claimed?.jobId).toBe("job-tz-1");
+    expect(capturedPatchUrl).toContain("job-tz-1");
+    expect(capturedPatchUrl).toContain("2026-11-16T14%3A51%3A33.714629%2B00%3A00");
+    expect(capturedPatchUrl).not.toContain("+00:00");
+  });
+
+  it("serverConfig dynamically reflects changes in process.env", () => {
+    const originalQueue = process.env.REPO_STORY_QUEUE_MODE;
+    try {
+      process.env.REPO_STORY_QUEUE_MODE = "memory";
+      expect(serverConfig.queueMode).toBe("memory");
+      process.env.REPO_STORY_QUEUE_MODE = "supabase";
+      expect(serverConfig.queueMode).toBe("supabase");
+    } finally {
+      if (originalQueue !== undefined) {
+        process.env.REPO_STORY_QUEUE_MODE = originalQueue;
+      } else {
+        delete process.env.REPO_STORY_QUEUE_MODE;
+      }
+    }
+  });
+
+  it("AnalysisJobRunner short-circuits and skips execution when job is already failed", async () => {
+    const store = new InMemoryAnalysisStore({ maxAnalyses: 5, ttlMs: 60_000 });
+    const failedJob = createFixtureJob("job-runner-failed");
+    failedJob.status = "failed";
+    await store.createJob(failedJob);
+
+    const provider = new FixtureRepositoryProvider();
+    const runner = new AnalysisJobRunner(store, provider);
+
+    await runner.runNow("job-runner-failed");
+    const jobAfter = await store.getJob("job-runner-failed", "session-1");
+    expect(jobAfter?.status).toBe("failed");
+    expect(jobAfter?.stage).toBe("validating-input");
   });
 });

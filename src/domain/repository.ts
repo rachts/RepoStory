@@ -41,5 +41,10 @@ export interface RepositoryProvider {
     signal?: AbortSignal,
     budget?: import("@/shared/limits").AnalysisBudget,
     onProgress?: (progress: { stage: string; progress: number; message: string }) => void,
+    options?: { token?: string },
   ): Promise<import("@/shared/result").Result<RepositorySnapshot, import("@/domain/errors").AppError>>;
+  resolveCommitSha?(
+    reference: RepositoryReference,
+    options?: { token?: string; signal?: AbortSignal },
+  ): Promise<import("@/shared/result").Result<string, import("@/domain/errors").AppError>>;
 }
