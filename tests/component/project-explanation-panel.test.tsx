@@ -82,4 +82,17 @@ describe("ProjectExplanationPanel", () => {
     await waitFor(() => expect(screen.getByText("Evidence-backed explanation")).toBeInTheDocument());
     expect(mocked.explainProject.mock.calls[1]?.[2]).toBe(true);
   });
+
+  it("renders immediately when initialExplanation is provided without requiring user click", () => {
+    render(
+      <ProjectExplanationPanel
+        analysisId="analysis-ui"
+        evidenceById={evidenceById}
+        initialExplanation={explanation}
+      />,
+    );
+
+    expect(screen.getByText("Evidence-backed explanation")).toBeInTheDocument();
+    expect(screen.getByText("A small web application.")).toBeInTheDocument();
+  });
 });

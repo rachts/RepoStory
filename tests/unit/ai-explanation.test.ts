@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { buildExplanationInput, collectExplanationEvidenceIds } from "@/application/ai/build-explanation-input";
 import type { AnalysisJob } from "@/domain/analysis";
-import { groqProjectExplanationJsonSchema, projectExplanationJsonSchema, projectExplanationSchema, unknownExplanationEvidenceIds, type ProjectExplanation } from "@/domain/ai-explanation";
+import { groqProjectExplanationJsonSchema, projectExplanationJsonSchema, projectExplanationSchema, sanitizeProjectExplanation, unknownExplanationEvidenceIds, type ProjectExplanation } from "@/domain/ai-explanation";
 import type { Diagram } from "@/domain/diagram";
 import type { AnalysisFinding } from "@/domain/finding";
 import { generateProjectExplanation } from "@/infrastructure/ai/groq-client";
@@ -114,6 +114,82 @@ describe("AI explanation contracts", () => {
     expect(projectExplanationJsonSchema.additionalProperties).toBe(false);
     expect(JSON.stringify(groqProjectExplanationJsonSchema)).not.toContain("minLength");
     expect(JSON.stringify(groqProjectExplanationJsonSchema)).not.toContain("maxLength");
+  });
+
+  it("sanitizes imperfect LLM outputs to satisfy projectExplanationSchema", () => {
+    const rawImperfect = {
+      unexpectedTopLevel: true,
+      projectSummary: {
+        title: "  Valid Title  ",
+        oneSentence: "", // empty string -> fallback
+        plainEnglish: "A".repeat(4000), // > 3000 chars -> clamped
+        evidenceIds: ["ev-1", "", "ev-2"],
+        confidence: "moderate", // non-standard -> coerced to medium
+        extraField: "ignored",
+      },
+      architectureAtAGlance: {
+        plainEnglish: "Overview",
+        layers: null, // null -> defaulted to []
+        evidenceIds: ["ev-1"],
+      },
+      mainComponents: [
+        {
+          name: "Comp 1",
+          simpleName: "Comp 1",
+          whatItDoes: "Does stuff",
+          whyItMatters: "Matters",
+          location: "src/index.ts",
+          evidenceIds: ["ev-1"],
+          confidence: "needs_verification", // underscore -> hyphen
+        },
+      ],
+      howTheSystemWorks: [
+        {
+          step: "1", // string -> coerced to 1
+          title: "Step 1",
+          plainEnglish: "Step plain",
+          technicalDetail: "Step tech",
+          evidenceIds: ["ev-1"],
+          confidence: "high",
+        },
+      ],
+      userJourney: null,
+      technologyGuide: [],
+      apiGuide: [],
+      dataAndIntegrations: [
+        {
+          name: "Postgres",
+          type: "sql_db", // invalid enum -> unknown
+          simplePurpose: "Stores data",
+          evidenceIds: ["ev-1"],
+          confidence: "high",
+        },
+      ],
+      securityAndAuthentication: {
+        plainEnglish: "Security",
+        confirmedControls: null,
+        unknowns: null,
+        evidenceIds: [],
+        confidence: "high",
+      },
+      glossary: null,
+      knownLimitations: null,
+      confidenceNote: "Notes",
+    };
+
+    const sanitized = sanitizeProjectExplanation(rawImperfect);
+    const parsed = projectExplanationSchema.safeParse(sanitized);
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.projectSummary.title).toBe("Valid Title");
+      expect(parsed.data.projectSummary.confidence).toBe("medium");
+      expect(parsed.data.projectSummary.plainEnglish.length).toBeLessThanOrEqual(3000);
+      expect(parsed.data.mainComponents[0]?.confidence).toBe("needs-verification");
+      expect(parsed.data.howTheSystemWorks[0]?.step).toBe(1);
+      expect(parsed.data.dataAndIntegrations[0]?.type).toBe("unknown");
+      expect(parsed.data.userJourney).toEqual([]);
+      expect(parsed.data.glossary).toEqual([]);
+    }
   });
 });
 

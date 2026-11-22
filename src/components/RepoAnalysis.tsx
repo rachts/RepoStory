@@ -7,12 +7,18 @@ import { Background, Controls, ReactFlow, type Edge, type Node } from "@xyflow/r
 import type { AnalysisJob, AnalysisJobRecord } from "@/domain/analysis";
 import type { ArchitectureStory } from "@/domain/architecture-story";
 import type { Diagram, DiagramDirection, DiagramEdge, DiagramNode, DiagramType } from "@/domain/diagram";
+import type { ProjectExplanation } from "@/domain/ai-explanation";
 import type { EvidenceReference } from "@/domain/evidence";
 import { toMarkdown, toMermaid } from "@/analysis/exports";
 import { ProjectExplanationPanel } from "@/components/ProjectExplanationPanel";
 import { RepoStoryBrand } from "@/components/RepoStoryBrand";
 
-interface AnalysisResponse extends AnalysisJob { diagrams: Diagram[]; architectureStory?: ArchitectureStory }
+interface AnalysisResponse extends AnalysisJob {
+  diagrams: Diagram[];
+  architectureStory?: ArchitectureStory;
+  explanation?: ProjectExplanation;
+  explanationUnavailable?: { code: string; message: string };
+}
 interface ExportResponse { content: string; filename: string; mimeType: string }
 interface ExportErrorResponse { error?: { code?: string; message?: string } }
 export interface RepoAnalysisProps {
@@ -495,7 +501,14 @@ export function RepoAnalysis({
 
   return <main className="analysis-page">
     <header className="analysis-header page-width"><RepoStoryBrand /><div className="analysis-repo"><span className="repo-kicker">ANALYSIS</span><strong>{analysis ? `${analysis.repository.owner}/${analysis.repository.name}` : job ? repositoryLabel(job.repositoryUrl) : "Loading repository…"}</strong></div><Link className="back-link" href="/">← New repository</Link></header>
-    {analysis?.status === "completed" ? <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} /> : null}
+    {analysis?.status === "completed" ? (
+      <ProjectExplanationPanel
+        analysisId={analysis.id}
+        evidenceById={evidenceById}
+        initialExplanation={analysis.explanation}
+        initialUnavailable={analysis.explanationUnavailable}
+      />
+    ) : null}
     {error ? (
       <StateCard
         title={
@@ -604,7 +617,12 @@ function StoryFirstWorkspace(props: StoryFirstWorkspaceProps): React.JSX.Element
     <ArchitectureStoryIntro repositoryName={analysis.repository.name} story={story} />
     <ArchitectureSteps story={story} />
     <CoverageSummary story={story} />
-    <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} />
+    <ProjectExplanationPanel
+      analysisId={analysis.id}
+      evidenceById={evidenceById}
+      initialExplanation={analysis.explanation}
+      initialUnavailable={analysis.explanationUnavailable}
+    />
     <div className="diagram-toolbar page-width"><strong>Diagram workspace</strong><span className={saved ? "save-state" : "save-state unsaved"}>{feedback || (saved ? "Saved" : "Unsaved changes")}</span><button aria-label="Undo" className="toolbar-button" onClick={onUndo} disabled={exportState !== "idle"}>Undo</button><button aria-label="Redo" className="toolbar-button" onClick={onRedo} disabled={exportState !== "idle"}>Redo</button><button className="toolbar-button" onClick={onReset} disabled={exportState !== "idle"}>Reset</button><button className="primary-button" onClick={onSave} disabled={saved || exportState !== "idle"}>Save changes</button></div>
     <section className="results-layout page-width"><aside className="diagram-sidebar"><p className="eyebrow"><span className="eyebrow-line" /> Story maps</p><h1>{analysis.repository.name}</h1><p className="sidebar-description">Start with the simplified overview, then open a request or authentication flow for more detail.</p><div className="diagram-list" aria-label="Available story maps">{availableDiagrams.map((item, index) => <button key={item.id} aria-label={`${DIAGRAM_TYPE_LABELS[item.type]}: ${item.title}`} className={`diagram-item ${item.id === diagram.id ? "active" : ""}`} data-diagram-type={item.type} onClick={() => onSelectDiagram(item)}><span className="diagram-index">{String(index + 1).padStart(2, "0")}</span><span><strong>{item.title}</strong><small>{DIAGRAM_TYPE_LABELS[item.type]} · {item.nodes.length} nodes · {item.edges.length} connections</small></span><span>→</span></button>)}{analysis.diagramAvailability?.filter((item) => !item.available).map((item) => <div key={item.type} className="unavailable-diagram"><strong>{DIAGRAM_TYPE_LABELS[item.type]}</strong><small>{item.reason ?? "Not enough evidence to generate this diagram."}</small></div>)}</div><div className="sidebar-note"><span>✦</span><p>Every label is grounded in repository evidence.</p></div></aside>
            <div className="results-main"><div className="results-title"><div><p className="eyebrow"><span className="eyebrow-line" /> {diagram.type === "system-overview" ? "Start here" : "Interactive preview"}</p><h2>{diagram.title}</h2><p>{diagram.description}</p></div><div className="toggle" role="group" aria-label="Label language"><button className={mode === "technical" ? "selected" : ""} aria-pressed={mode === "technical"} onClick={() => onModeChange("technical")}>Technical</button><button className={mode === "plain" ? "selected" : ""} aria-pressed={mode === "plain"} onClick={() => onModeChange("plain")}>Plain English</button></div></div><HowToReadDiagram /><div className="flow-wrap" role="region" aria-label={`${diagram.title} diagram`}><ReactFlow nodes={nodes} edges={edges} fitView onNodeClick={(_event, node) => onSelect({ type: "node", id: node.id })} onEdgeClick={(_event, edge) => onSelect({ type: "edge", id: edge.id })}><Background color="#d9d8cf" gap={24} /><Controls /></ReactFlow></div><div className="results-toolbar"><label className="direction-control">Direction<select value={diagram.direction} onChange={(event) => onDiagramChange({ direction: event.target.value as DiagramDirection })} disabled={exportState !== "idle"}><option value="TB">Top to bottom</option><option value="LR">Left to right</option><option value="RL">Right to left</option><option value="BT">Bottom to top</option></select></label><label className="summary-export-option"><input type="checkbox" checked={includeArchitectureSummary} onChange={(event) => onIncludeArchitectureSummaryChange(event.target.checked)} disabled={exportState !== "idle"} /> Include plain-English architecture summary</label><button className="secondary-button" onClick={() => void onCopyExport("mermaid")} disabled={exportState !== "idle"}>Copy Mermaid</button><button className="primary-button" onClick={() => void onCopyExport("markdown")} disabled={exportState !== "idle"}>Copy README Markdown</button>{exportState !== "idle" ? <span className="export-status" role="status" aria-live="polite">{exportState === "saving" ? "Saving changes before export…" : "Generating export…"}</span> : null}{exportError ? <p className="export-error" role="alert">{exportError}</p> : null}</div><EvidenceSection evidence={evidence} /></div>
@@ -632,7 +650,12 @@ function StoryWithoutDiagram({
     <ArchitectureStoryIntro repositoryName={analysis.repository.name} story={story} />
     <ArchitectureSteps story={story} />
     <CoverageSummary story={story} />
-    <ProjectExplanationPanel analysisId={analysis.id} evidenceById={evidenceById} />
+    <ProjectExplanationPanel
+      analysisId={analysis.id}
+      evidenceById={evidenceById}
+      initialExplanation={analysis.explanation}
+      initialUnavailable={analysis.explanationUnavailable}
+    />
     <StateCard
       title={isEmpty ? "No evidence-backed map is available." : "No visual map is available."}
       message={isEmpty ? story.plainEnglishSummary : "The plain-English story is available, but no supported diagram was generated from the analyzed evidence."}

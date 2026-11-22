@@ -2,7 +2,7 @@ import "server-only";
 
 import Groq from "groq-sdk";
 import { z } from "zod";
-import { groqProjectExplanationJsonSchema, projectExplanationSchema, type ProjectExplanation } from "@/domain/ai-explanation";
+import { groqProjectExplanationJsonSchema, projectExplanationSchema, sanitizeProjectExplanation, type ProjectExplanation } from "@/domain/ai-explanation";
 import { AppError } from "@/domain/errors";
 import { serverConfig } from "@/shared/config";
 
@@ -73,6 +73,19 @@ function normalizeGroqError(error: unknown): AppError {
   return new AppError({ code: "AI_UPSTREAM_FAILED", message: "The AI explanation service is temporarily unavailable.", retryable: true, details: status ? { upstreamStatus: status } : undefined });
 }
 
+function cleanJsonContent(raw: string): string {
+  let cleaned = raw.trim();
+  if (cleaned.startsWith("```json")) {
+    cleaned = cleaned.slice(7);
+  } else if (cleaned.startsWith("```")) {
+    cleaned = cleaned.slice(3);
+  }
+  if (cleaned.endsWith("```")) {
+    cleaned = cleaned.slice(0, -3);
+  }
+  return cleaned.trim();
+}
+
 function responseFormat(model: string): NonNullable<Parameters<Groq["chat"]["completions"]["create"]>[0]["response_format"]> {
   if (STRICT_STRUCTURED_OUTPUT_MODELS.has(model)) {
     return {
@@ -109,7 +122,7 @@ export async function generateProjectExplanation(input: string, config: GroqExpl
       messages,
       response_format: responseFormat(config.model),
       temperature: 0.1,
-      max_completion_tokens: 3_000,
+      max_completion_tokens: 6_000,
       ...(GPT_OSS_MODELS.has(config.model) ? { reasoning_effort: "low" as const, include_reasoning: false } : {}),
       stream: false as const,
     };
@@ -123,17 +136,19 @@ export async function generateProjectExplanation(input: string, config: GroqExpl
       completion = await client.chat.completions.create({ ...request, response_format: { type: "json_object" } }, { signal: controller.signal });
     }
 
-    const content = completion.choices[0]?.message?.content;
-    if (typeof content !== "string" || !content.trim()) throw new AppError({ code: "AI_INVALID_RESPONSE", message: "The AI explanation response was empty.", retryable: true });
+    const rawContent = completion.choices[0]?.message?.content;
+    if (typeof rawContent !== "string" || !rawContent.trim()) throw new AppError({ code: "AI_INVALID_RESPONSE", message: "The AI explanation response was empty.", retryable: true });
 
+    const content = cleanJsonContent(rawContent);
     let parsed: unknown;
     try {
       parsed = JSON.parse(content) as unknown;
     } catch {
       throw new AppError({ code: "AI_INVALID_RESPONSE", message: "The AI explanation response was not valid JSON.", retryable: true });
     }
+    const sanitized = sanitizeProjectExplanation(parsed);
     try {
-      return projectExplanationSchema.parse(parsed);
+      return projectExplanationSchema.parse(sanitized);
     } catch (validationError) {
       if (validationError instanceof z.ZodError) throw new AppError({ code: "AI_INVALID_RESPONSE", message: "The AI explanation response did not match the required schema.", retryable: true, details: { issues: validationError.issues.length } });
       throw validationError;
