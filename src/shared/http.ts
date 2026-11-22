@@ -4,6 +4,7 @@ import { redactPathValues } from "@/shared/redaction";
 
 export function inferErrorStage(code: string): AnalysisErrorStage {
   if (
+    code === "ARCHIVE_DOWNLOAD_STALLED" ||
     code === "REPOSITORY_NOT_FOUND" ||
     code === "REPOSITORY_NOT_FOUND_OR_PRIVATE" ||
     code === "REPOSITORY_INACCESSIBLE" ||
@@ -77,6 +78,8 @@ export function inferErrorHint(code: string): string {
       return "Make the repository public or sign in with a GitHub token that has repo scope.";
     case "REPOSITORY_NOT_FOUND":
       return "Verify the repository URL and branch name.";
+    case "ARCHIVE_DOWNLOAD_STALLED":
+      return "The connection to GitHub stalled during archive download. Retrying may succeed.";
     case "GITHUB_RATE_LIMITED":
       return "Provide a GitHub token via authentication or request body to increase rate limits.";
     case "REPO_TOO_LARGE":
