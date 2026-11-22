@@ -1066,4 +1066,57 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
       return err(new AppError({ code: "REPOSITORY_INACCESSIBLE", message: "GitHub request failed.", retryable: true }));
     }
   }
+
+  public async resolveCommitSha(
+    reference: RepositoryReference,
+    options?: { token?: string; signal?: AbortSignal },
+  ): Promise<Result<string, AppError>> {
+    const branchOrRef = reference.branch && reference.branch !== "default" ? reference.branch : "HEAD";
+    if (/^[0-9a-f]{40}$/i.test(branchOrRef)) {
+      return ok(branchOrRef);
+    }
+
+    const tokenOverride = options?.token;
+    const fetchOptions: RequestInit = { signal: options?.signal, cache: "no-store" };
+    const commitUrl = buildSafeGitHubApiUrl(reference.owner, reference.name, `commits/${encodeURIComponent(branchOrRef)}`);
+
+    try {
+      const response = await this.dispatch(commitUrl, fetchOptions, "commits", undefined, tokenOverride);
+      if (!response.ok) {
+        if (response.status === 404) {
+          return err(new AppError({
+            code: "REPOSITORY_NOT_FOUND",
+            stage: "fetch",
+            message: "Repository or branch not found.",
+            retryable: false,
+          }));
+        }
+        return err(new AppError({
+          code: "REF_LOOKUP_FAILED",
+          stage: "fetch",
+          message: `Failed to resolve repository commit SHA (${response.status})`,
+          retryable: true,
+        }));
+      }
+
+      const data = (await response.json()) as { sha?: string };
+      if (typeof data.sha === "string" && /^[0-9a-f]{40}$/i.test(data.sha)) {
+        return ok(data.sha);
+      }
+      return err(new AppError({
+        code: "INVALID_COMMIT_SHA",
+        stage: "fetch",
+        message: "GitHub API returned invalid commit SHA.",
+        retryable: false,
+      }));
+    } catch (error) {
+      if (error instanceof AppError) return err(error);
+      return err(new AppError({
+        code: "REF_LOOKUP_FAILED",
+        stage: "fetch",
+        message: "Failed to resolve repository commit SHA.",
+        retryable: true,
+      }));
+    }
+  }
 }

@@ -145,7 +145,7 @@ export async function runAnalysis(
   const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const budget = options.budget ?? createAnalysisBudget(limits.maxAnalysisMs, options.now, signal);
   const progress = (stage: AnalysisResult["stage"], progressPercent: number, message: string): void => {
-    job = { ...job, stage, progressPercent, status: "running" };
+    job = { ...job, stage, progressPercent, status: stage === "completed" ? "completed" : "running" };
     store.save(job);
     options.onProgress?.({ stage, progress: progressPercent, message });
   };
@@ -183,15 +183,33 @@ export async function runAnalysis(
   };
 
   const cacheStore = options.cacheStore ?? provider.cacheStore;
-  const isCommitSha = reference.branch && /^[0-9a-f]{40}$/i.test(reference.branch);
+  let resolvedCommitSha: string | undefined =
+    reference.branch && /^[0-9a-f]{40}$/i.test(reference.branch) ? reference.branch : undefined;
 
-  if (isCommitSha && cacheStore) {
-    const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${reference.branch}:analysis`;
+  if (!resolvedCommitSha && provider.resolveCommitSha && !options.files) {
+    try {
+      const shaRes = await provider.resolveCommitSha(reference, {
+        token: options.token,
+        signal,
+      });
+      if (shaRes.ok) {
+        resolvedCommitSha = shaRes.value;
+      }
+    } catch {
+      // Lightweight ref lookup failure is non-fatal; falls through to getSnapshot
+    }
+  }
+
+  if (resolvedCommitSha && cacheStore) {
+    const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
     const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
     if (cached) {
       job = {
         ...cached,
         id,
+        status: "completed",
+        stage: "completed",
+        progressPercent: 100,
         diagrams: (cached.diagrams ?? []).map((diagram) => ({
           ...diagram,
           analysisId: id,
@@ -199,8 +217,9 @@ export async function runAnalysis(
         createdAt: started,
         completedAt: nowIso(),
       };
-      store.save(job);
       progress("completed", 100, "Analysis complete (cached)");
+      job.status = "completed";
+      store.save(job);
       return ok(job);
     }
   }
@@ -238,6 +257,9 @@ export async function runAnalysis(
           job = {
             ...cached,
             id,
+            status: "completed",
+            stage: "completed",
+            progressPercent: 100,
             diagrams: (cached.diagrams ?? []).map((diagram) => ({
               ...diagram,
               analysisId: id,
@@ -246,8 +268,9 @@ export async function runAnalysis(
             createdAt: started,
             completedAt: nowIso(),
           };
-          store.save(job);
           progress("completed", 100, "Analysis complete (cached)");
+          job.status = "completed";
+          store.save(job);
           return ok(job);
         }
       }
