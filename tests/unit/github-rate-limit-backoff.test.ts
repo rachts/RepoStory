@@ -109,6 +109,7 @@ describe("Fix 11: GitHub Rate Limit Backoff & Fail Fast", () => {
     }
 
     // Must fail fast without sleeping!
+    expect(callCount).toBe(1);
     expect(mockSleep).not.toHaveBeenCalled();
     expect(thrownError).toBeDefined();
     expect(thrownError?.code).toBe("GITHUB_RATE_LIMITED");

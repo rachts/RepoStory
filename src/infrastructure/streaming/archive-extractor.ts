@@ -3,7 +3,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import tar from "tar-stream";
 import type { RepositoryFile } from "@/domain/repository";
-import { DEFAULT_LIMITS, DEFAULT_MAX_HEAP_BYTES, type AnalysisLimits, type AnalysisBudget } from "@/shared/limits";
+import { DEFAULT_MAX_HEAP_BYTES, type AnalysisLimits, type AnalysisBudget } from "@/shared/limits";
 import type { CacheStore } from "@/application/cache/cache-store";
 import { decodeFileBuffer, normalizeRepositoryPath, type SkipReason } from "@/analysis/file-decoder";
 import { AppError } from "@/domain/errors";

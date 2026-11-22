@@ -17,9 +17,9 @@ Branch: `fix/analysis-reliability`
 | **Fix 10** | Persist remapped diagrams & preserve edits on cache hit | Verified | `6efc86b` | Remapped unique diagram IDs, saved to store & repository on cache hit, merged user edits from cacheStore, verified /api/analysis/[id]/diagrams > 0; screenshot: 15-phase4-cache-hit-diagrams.png |
 | **Fix 11** | Jittered rate-limit backoff in GitHub dispatch without 100ms cap | Verified | `6e6f078` | Removed 100ms artificial cap, implemented full retry-after backoff with jitter, fast-failed with GITHUB_RATE_LIMITED on budget overflow; tested in tests/unit/github-rate-limit-backoff.test.ts |
 | **Fix 12** | Atomic `createOrReuseJob` with unique constraint / ON CONFLICT, event wait in `waitForIdle` | Verified | `8546c80` | Created migration 007 partial unique index on active jobs, handled 409 conflict atomically, replaced sleep(0) busy-spin with event-driven idleWaiters; tested in tests/unit/atomic-job-dedup.test.ts |
-| **Fix 13** | Last worker heartbeat in job status response, UI worker offline indicator | Todo | | |
-| **Fix 14** | Frontend `diagramAvailability` reasons & structure fallback diagram | Todo | | |
-| **Regression** | Final full-suite pass, multi-scenario browser verification & deployment runbook | Todo | | |
+| **Fix 13** | Last worker heartbeat in job status response, UI worker offline indicator | Verified | `be4547b` | Computed workerStatus ('active'/'offline'/'idle') and exposed heartbeatAt in GET /api/analyze/jobs/[jobId], added worker offline UI indicator, verified in tests/unit/worker-heartbeat-status.test.ts and Playwright browser test (screenshot: 16-phase5-worker-offline-indicator.png) |
+| **Fix 14** | Frontend `diagramAvailability` reasons & structure fallback diagram | Verified | `dd8a1d6` | Surfaced diagramAvailability reasons in empty states with fallback defaults, added on-demand structure fallback diagram synthesized from repository findings paths, verified in tests/unit/diagram-availability-empty-state.test.tsx and Playwright browser test (screenshot: 17-phase5-diagram-fallback.png) |
+| **Regression** | Final full-suite pass, multi-scenario browser verification & deployment runbook | Verified | Full Suite | 48 test suites passing (325 tests), 0 lint errors/warnings, typecheck & build:worker passing, 10 browser screenshot artifacts verified, DEPLOYMENT.md runbook updated |
 
 ---
 
@@ -89,5 +89,38 @@ Branch: `fix/analysis-reliability`
   - Added in-flight promise deduplication in `src/application/store.ts` for atomic deduplication in memory.
   - Replaced `sleep(0)` busy loop in `src/application/jobs/analysis-job-runner.ts` `waitForIdle` with an event-driven `idleWaiters` notification system that resolves cleanly without burning CPU ticks.
   - Verified with unit tests in `tests/unit/atomic-job-dedup.test.ts`.
+- **Fix 13**:
+  - Computed `workerStatus` (`'active' | 'offline' | 'idle'`) based on 40s heartbeat threshold in `GET /api/analyze/jobs/[jobId]`.
+  - Exposed `heartbeatAt` (string or null) and `workerStatus` in the status JSON response.
+  - Extended `AnalysisJobRecord` domain model with `workerStatus?: "active" | "offline" | "idle"`.
+  - Added worker offline badge indicator in `ProgressState` (`src/components/RepoAnalysis.tsx`) and CSS styling in `src/app/globals.css`.
+  - Added `waitForIdle()` on `JobWorker` to cleanly synchronize job processing lifecycle.
+  - Verified with unit tests in `tests/unit/worker-heartbeat-status.test.ts`, component tests in `tests/component/repo-analysis.test.tsx`, and Playwright browser E2E test in `scripts/verify-phase5-fix13-browser.ts` (screenshot: `16-phase5-worker-offline-indicator.png`).
+- **Fix 14**:
+  - Surfaced `diagramAvailability` reasons in empty states (`StoryWithoutDiagram` and `StateCard`), pulling from `analysis.diagramAvailability`, `architectureStory.coverage.diagramAvailability`, or sensible default reasons.
+  - Implemented `createStructureFallbackDiagram` in `RepoAnalysis.tsx` to synthesize a conservative repository structure diagram from findings paths when no specialized diagrams are available.
+  - Added an interactive "Show repository structure fallback" CTA in empty states allowing users to load and explore the fallback diagram on demand.
+  - Verified with unit tests in `tests/unit/diagram-availability-empty-state.test.tsx`, component tests in `tests/component/repo-analysis.test.tsx`, and Playwright browser E2E test in `scripts/verify-phase5-fix14-browser.ts` (screenshot: `17-phase5-diagram-fallback.png`).
+
+### Final Regression Pass & Verification Summary
+- **Typecheck**: Clean pass with `tsc --noEmit`.
+- **Worker Build**: Clean pass with `tsc -p tsconfig.worker.json`.
+- **Linter**: Zero errors and zero warnings across the entire repository with `eslint .`.
+- **Test Suite**: 48 test suites passing (325 tests) with `vitest run`.
+- **Browser Screenshot Artifacts (Saved to Artifacts Directory)**:
+  - `08-phase1-stalled-download-error.png`: Stalled archive download error state with retry CTA.
+  - `09-phase1-stalled-download-retried.png`: State after clicking retry analysis.
+  - `10-phase1-worker-killed-stalled.png`: Worker process killed mid-job swept to failed with JOB_STALLED.
+  - `11-phase2-progress-content-length.png`: Monotonic progress 45% -> 60% with content-length.
+  - `12-phase2-progress-chunked.png`: Asymptotic chunked progress curve.
+  - `13-phase2-polling-timeout-cta.png`: Polling timeout display with retry button.
+  - `14-phase3-private-repo-authenticated.png`: Private repository analyzed in queue mode with zero token leak.
+  - `15-phase4-cache-hit-diagrams.png`: Cache hit retrieving all diagrams and preserving edits.
+  - `16-phase5-worker-offline-indicator.png`: Stale worker heartbeat (>40s) displaying "Worker offline" indicator.
+  - `17-phase5-diagram-fallback.png`: Diagram availability reasons and rendered repository structure fallback diagram.
+- **Deployment Runbook**: Documented in `DEPLOYMENT.md` and `render.yaml`.
+
+
+
 
 
