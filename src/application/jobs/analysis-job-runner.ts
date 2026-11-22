@@ -18,6 +18,7 @@ export interface AnalysisJobRunnerOptions {
   retryBackoffMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
   now?: () => number;
+  analysisTimeoutMs?: number;
 }
 
 function safeError(error: unknown): AppError {
@@ -89,6 +90,7 @@ export class AnalysisJobRunner {
       retryBackoffMs: options.retryBackoffMs ?? serverConfig.jobRetryBackoffMs,
       sleep: options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))),
       now: options.now ?? Date.now,
+      analysisTimeoutMs: options.analysisTimeoutMs ?? DEFAULT_LIMITS.maxAnalysisMs,
     };
   }
 
@@ -209,9 +211,13 @@ export class AnalysisJobRunner {
         }
       }
       const scratchStore = new InMemoryAnalysisStore({ maxAnalyses: 2, ttlMs: DEFAULT_LIMITS.maxAnalysisMs * 4, isScratch: true });
+      const timeoutMs = this.options.analysisTimeoutMs ?? DEFAULT_LIMITS.maxAnalysisMs;
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const combinedSignal = AbortSignal.any([controller.signal, timeoutSignal]);
       const result = await runAnalysis(repositoryReference(current), this.provider, scratchStore, {
         analysisId,
-        signal: controller.signal,
+        signal: combinedSignal,
+        limits: { ...DEFAULT_LIMITS, maxAnalysisMs: timeoutMs },
         cacheStore: this.provider.cacheStore,
         token,
         onProgress: (progress) => {
