@@ -382,8 +382,9 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
         currentUrl.hostname.toLowerCase() === "api.github.com" ||
         (testApiOrigin !== null && currentOrigin === testApiOrigin);
       const isCodeload =
-        currentUrl.hostname.toLowerCase() === "codeload.github.com" ||
-        (testCodeloadOrigin !== null && currentOrigin === testCodeloadOrigin);
+        stage === "archive" &&
+        (currentUrl.hostname.toLowerCase() === "codeload.github.com" ||
+          (testCodeloadOrigin !== null && currentOrigin === testCodeloadOrigin));
 
       const isProtocolPermitted =
         currentUrl.protocol === "https:" ||

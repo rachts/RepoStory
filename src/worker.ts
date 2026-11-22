@@ -26,7 +26,7 @@ import { assertProductionGuards } from "@/config/production-guards";
 
 assertProductionGuards();
 
-import { jobQueue, analysisRepository, analysisJobRunner } from "@/composition/container";
+import { jobQueue, analysisRepository, analysisJobRunner, cacheStore } from "@/composition/container";
 import { JobWorker } from "@/application/jobs/job-worker";
 import type { JobQueueItem } from "@/application/jobs/job-queue";
 import { logger } from "@/shared/logger";
@@ -38,6 +38,7 @@ const workerId = process.env.WORKER_ID || `worker-${process.pid}`;
 logger.info({ workerId }, `[RepoStory Worker] Starting worker ${workerId}...`);
 
 import { activeJobIds, failActiveJobsOnCrash } from "@/application/jobs/worker-crash-handler";
+import { jobTokenRegistry, decryptToken, type EncryptedTokenPayload } from "@/infrastructure/jobs/job-token-registry";
 
 // Process-level guards against silent termination: await mark-failed write before exit(1)
 process.on("unhandledRejection", (reason) => {
@@ -62,6 +63,21 @@ const concurrency = process.env.WORKER_CONCURRENCY ? Number(process.env.WORKER_C
 export async function processJob(item: JobQueueItem): Promise<void> {
   activeJobIds.add(item.jobId);
   console.log(`[Worker] Starting validation for job ${item.jobId}`);
+  let encrypted = (item.payload?.encryptedToken as EncryptedTokenPayload | undefined);
+  if (!encrypted) {
+    try {
+      encrypted = await cacheStore.get<EncryptedTokenPayload>(`job-token:${item.jobId}`);
+    } catch { /* ignore */ }
+  }
+
+  if (encrypted) {
+    try {
+      const decrypted = decryptToken(encrypted);
+      jobTokenRegistry.set(item.jobId, { token: decrypted, expiresAt: Date.now() + 15 * 60 * 1000 });
+    } catch (err) {
+      console.error(`[Worker] Failed to decrypt token for job ${item.jobId}:`, err);
+    }
+  }
   try {
     const existingJob = await analysisRepository.getJob(item.jobId);
     if (existingJob?.status === "completed") {
@@ -147,6 +163,8 @@ export async function processJob(item: JobQueueItem): Promise<void> {
       console.error(`[Worker] Failed to mark job ${item.jobId} as failed in queue:`, queueErr);
     }
   } finally {
+    jobTokenRegistry.delete(item.jobId);
+    void cacheStore.delete(`job-token:${item.jobId}`).catch(() => {});
     activeJobIds.delete(item.jobId);
   }
 }
