@@ -841,6 +841,10 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
           const archiveResponse = await this.dispatch(archiveUrl, fetchOptions, "archive", budget, tokenOverride);
 
           if (archiveResponse.ok && archiveResponse.body) {
+            const contentLengthHeader = archiveResponse.headers.get("content-length");
+            const parsedLength = contentLengthHeader ? parseInt(contentLengthHeader, 10) : undefined;
+            const totalBytes = Number.isFinite(parsedLength) && (parsedLength ?? 0) > 0 ? parsedLength : undefined;
+
             const extracted = await extractRepositoryArchive({
               stream: archiveResponse.body,
               candidatePaths: candidatePathsSet,
@@ -849,6 +853,8 @@ export class GitHubPublicRepositoryProvider implements RepositoryProvider {
               cacheStore: this.cacheStore,
               cacheKeyPrefix: `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:content:`,
               signal,
+              totalBytes,
+              onProgress: (p) => onProgress?.({ stage: p.stage, progress: p.progress, message: p.message }),
             });
 
             if (extracted.files.length > 0 || candidates.length === 0) {

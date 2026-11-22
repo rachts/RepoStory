@@ -40,6 +40,32 @@ describe("Archive Extractor Reliability", () => {
     expect(result.files.find((f) => f.path === "src/index.ts")?.content).toBe("export const x = 1;");
   });
 
+  it("reports byte-level progress from 45 to 60 as chunks arrive", async () => {
+    const tarGzBuffer = await createTarGzBuffer([
+      { path: "src/index.ts", content: "export const x = 1;".repeat(500) },
+      { path: "package.json", content: JSON.stringify({ name: "test-repo" }) },
+    ]);
+
+    const progressReports: number[] = [];
+    const stream = Readable.from(tarGzBuffer);
+
+    const result = await extractRepositoryArchive({
+      stream,
+      candidatePaths: new Set(["src/index.ts", "package.json"]),
+      limits: DEFAULT_LIMITS,
+      totalBytes: tarGzBuffer.length,
+      onProgress: (p) => {
+        progressReports.push(p.progress);
+      },
+    });
+
+    expect(result.files).toHaveLength(2);
+    expect(progressReports.length).toBeGreaterThan(0);
+    expect(progressReports[0]).toBeGreaterThanOrEqual(45);
+    expect(progressReports[progressReports.length - 1]).toBeLessThanOrEqual(60);
+    expect(progressReports[progressReports.length - 1]).toBeGreaterThanOrEqual(55);
+  });
+
   it("stream that errors mid-download: rejects promptly and does not hang or leak uncaught exceptions", async () => {
     const tarGzBuffer = await createTarGzBuffer([
       { path: "src/index.ts", content: "export const x = 1;" },

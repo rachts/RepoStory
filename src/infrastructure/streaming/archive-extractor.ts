@@ -38,6 +38,8 @@ export interface ArchiveExtractionOptions {
   cacheKeyPrefix?: string;
   signal?: AbortSignal;
   inactivityTimeoutMs?: number;
+  totalBytes?: number;
+  onProgress?: (progress: { stage: string; progress: number; message: string }) => void;
 }
 
 function normalizeExtractionError(err: unknown): AppError {
@@ -112,7 +114,7 @@ export async function extractRepositoryArchive(
   let watchdogTimer: NodeJS.Timeout | undefined;
   let deadlineTimer: NodeJS.Timeout | undefined;
 
-  const defaultInactivityMs = 20_000;
+  const defaultInactivityMs = 15_000;
   const inactivityTimeoutMs = options.inactivityTimeoutMs ?? (
     process.env.ARCHIVE_INACTIVITY_TIMEOUT_MS ? Number(process.env.ARCHIVE_INACTIVITY_TIMEOUT_MS) : defaultInactivityMs
   );
@@ -173,10 +175,30 @@ export async function extractRepositoryArchive(
   // Start the watchdog initially in case stream never produces any chunks
   resetWatchdog();
 
-  // Watchdog monitor pass-through stream
+  // Watchdog monitor pass-through stream with byte-level progress reporting (45 -> 60)
+  let receivedBytes = 0;
+  let lastReportedProgress = 45;
   const watchdogPassThrough = new PassThrough();
-  watchdogPassThrough.on("data", () => {
+  watchdogPassThrough.on("data", (chunk: Buffer | Uint8Array) => {
     resetWatchdog();
+    receivedBytes += chunk.length;
+    let currentProgress: number;
+    if (options.totalBytes && options.totalBytes > 0) {
+      const ratio = Math.min(1, receivedBytes / options.totalBytes);
+      currentProgress = Math.min(60, Math.max(45, Math.round(45 + ratio * 15)));
+    } else {
+      currentProgress = Math.min(59, Math.max(45, 45 + Math.floor(Math.log2(1 + receivedBytes / 65536))));
+    }
+    if (currentProgress > lastReportedProgress) {
+      lastReportedProgress = currentProgress;
+      options.onProgress?.({
+        stage: "fetch-archive",
+        progress: currentProgress,
+        message: options.totalBytes
+          ? `Downloading repository archive (${currentProgress}% of ${(options.totalBytes / 1024 / 1024).toFixed(1)}MB)`
+          : `Downloading repository archive (${currentProgress}%)`,
+      });
+    }
   });
 
   // Calculate remaining budget deadline
