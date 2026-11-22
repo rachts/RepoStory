@@ -13,7 +13,7 @@ function booleanValue(value: string | undefined, fallback: boolean): boolean {
 export const serverConfig = {
   get githubToken() { return process.env.GITHUB_TOKEN; },
   get supabaseUrl() { return process.env.SUPABASE_URL?.trim() || process.env.NEXT_PUBLIC_SUPABASE_URL?.trim(); },
-  get supabaseSecretKey() { return process.env.SUPABASE_SECRET_KEY?.trim(); },
+  get supabaseSecretKey() { return process.env.SUPABASE_SECRET_KEY?.trim() || process.env.SUPABASE_SERVICE_ROLE_KEY?.trim(); },
   get maxAnalyses() { return positiveInteger(process.env.REPO_STORY_MAX_ANALYSES, DEFAULT_STORE_LIMITS.maxAnalyses); },
   get analysisTtlMs() { return positiveInteger(process.env.REPO_STORY_ANALYSIS_TTL_MS, DEFAULT_STORE_LIMITS.ttlMs); },
   get groqApiKey() { return process.env.GROQ_API_KEY; },
