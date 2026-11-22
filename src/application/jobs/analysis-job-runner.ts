@@ -10,7 +10,8 @@ import { nowIso, opaqueId } from "@/shared/ids";
 import { serverConfig } from "@/shared/config";
 import { DEFAULT_LIMITS } from "@/shared/limits";
 
-export const jobTokenRegistry = new Map<string, { token: string; expiresAt: number }>();
+import { jobTokenRegistry, decryptToken, type EncryptedTokenPayload } from "@/infrastructure/jobs/job-token-registry";
+export { jobTokenRegistry };
 
 export interface AnalysisJobRunnerOptions {
   maxConcurrentJobs?: number;
@@ -191,7 +192,17 @@ export class AnalysisJobRunner {
     this.controllers.set(jobId, controller);
     let retryCount = initial.retryCount;
 
-    const registered = jobTokenRegistry.get(jobId);
+    let registered = jobTokenRegistry.get(jobId);
+    if (!registered && this.provider.cacheStore) {
+      try {
+        const encrypted = await this.provider.cacheStore.get<EncryptedTokenPayload>(`job-token:${jobId}`);
+        if (encrypted) {
+          const decrypted = decryptToken(encrypted);
+          jobTokenRegistry.set(jobId, { token: decrypted, expiresAt: Date.now() + 15 * 60 * 1000 });
+          registered = jobTokenRegistry.get(jobId);
+        }
+      } catch { /* ignore */ }
+    }
     let token = registered?.token;
     if (registered && registered.expiresAt < Date.now()) {
       jobTokenRegistry.delete(jobId);

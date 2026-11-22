@@ -31,7 +31,10 @@ export class InMemoryJobQueue implements JobQueue {
     return next;
   }
 
-  public async enqueue(jobId: string, options?: { availableAt?: Date; maxAttempts?: number }): Promise<JobQueueItem> {
+  public async enqueue(
+    jobId: string,
+    options?: { availableAt?: Date; maxAttempts?: number; payload?: Record<string, unknown> },
+  ): Promise<JobQueueItem> {
     return this.withLock(() => {
       const now = this.nowProvider();
       const existing = this.items.get(jobId);
@@ -46,6 +49,7 @@ export class InMemoryJobQueue implements JobQueue {
         attempts: 0,
         maxAttempts: options?.maxAttempts ?? this.maxAttempts,
         availableAt: options?.availableAt ? options.availableAt.toISOString() : new Date(now).toISOString(),
+        payload: options?.payload ? structuredClone(options.payload) : null,
         createdAt: new Date(now).toISOString(),
         updatedAt: new Date(now).toISOString(),
       };

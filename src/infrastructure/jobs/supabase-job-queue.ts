@@ -53,12 +53,16 @@ export class SupabaseJobQueue implements JobQueue {
       heartbeatAt: typeof row.heartbeat_at === "string" ? row.heartbeat_at : undefined,
       availableAt: String(row.available_at ?? row.created_at),
       error: (row.error as JobQueueError) ?? undefined,
+      payload: (row.payload as Record<string, unknown>) ?? null,
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at),
     };
   }
 
-  public async enqueue(jobId: string, options?: { availableAt?: Date; maxAttempts?: number }): Promise<JobQueueItem> {
+  public async enqueue(
+    jobId: string,
+    options?: { availableAt?: Date; maxAttempts?: number; payload?: Record<string, unknown> },
+  ): Promise<JobQueueItem> {
     const now = new Date().toISOString();
     const item: Record<string, unknown> = {
       id: opaqueId("qitem"),
@@ -67,15 +71,25 @@ export class SupabaseJobQueue implements JobQueue {
       attempts: 0,
       max_attempts: options?.maxAttempts ?? this.maxAttempts,
       available_at: options?.availableAt ? options.availableAt.toISOString() : now,
+      ...(options?.payload ? { payload: options.payload } : {}),
       created_at: now,
       updated_at: now,
     };
 
-    const response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
+    let response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
       method: "POST",
       headers: { ...this.headers(), Prefer: "return=representation,resolution=merge-duplicates" },
       body: JSON.stringify(item),
     });
+
+    if (!response.ok && item.payload) {
+      delete item.payload;
+      response = await this.fetchImpl(`${this.baseUrl}/repo_story_job_queue`, {
+        method: "POST",
+        headers: { ...this.headers(), Prefer: "return=representation,resolution=merge-duplicates" },
+        body: JSON.stringify(item),
+      });
+    }
 
     if (!response.ok) {
       throw new AppError({

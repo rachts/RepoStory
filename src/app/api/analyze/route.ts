@@ -3,6 +3,8 @@ import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
 import { jobTokenRegistry } from "@/application/jobs/analysis-job-runner";
+import { encryptToken } from "@/infrastructure/jobs/job-token-registry";
+import { cacheStore } from "@/composition/container";
 import {
   resolveRequestIdentity,
   checkDailyQuota,
@@ -133,12 +135,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     });
     const job = created.job;
     const effectiveToken = input.githubToken || input.token || identityResult.value.accessToken;
+    let encryptedPayload: ReturnType<typeof encryptToken> | undefined;
     if (effectiveToken) {
       jobTokenRegistry.set(job.jobId, { token: effectiveToken, expiresAt: Date.now() + 15 * 60 * 1000 });
+      encryptedPayload = encryptToken(effectiveToken);
+      try {
+        await cacheStore.set(`job-token:${job.jobId}`, encryptedPayload, 15 * 60 * 1000);
+      } catch (err) {
+        console.error(`[API] Failed to store encrypted token in cacheStore for ${job.jobId}:`, err);
+      }
     }
 
     if (created.created) {
-      await jobQueue.enqueue(job.jobId);
+      const payload = encryptedPayload ? { encryptedToken: encryptedPayload } : undefined;
+      await jobQueue.enqueue(job.jobId, { payload });
       if (shouldRunInProcessJobs()) {
         analysisJobRunner.enqueue(job.jobId, effectiveToken ? { token: effectiveToken } : undefined);
       }
