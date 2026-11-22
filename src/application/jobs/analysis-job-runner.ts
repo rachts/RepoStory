@@ -81,8 +81,18 @@ export class AnalysisJobRunner {
   private readonly queued = new Set<string>();
   private readonly running = new Set<string>();
   private readonly controllers = new Map<string, AbortController>();
+  private readonly idleWaiters = new Set<() => void>();
   private readonly options: Required<AnalysisJobRunnerOptions>;
   private drainScheduled = false;
+
+  private notifyIfIdle(): void {
+    if (this.queued.size === 0 && this.running.size === 0) {
+      for (const waiter of this.idleWaiters) {
+        waiter();
+      }
+      this.idleWaiters.clear();
+    }
+  }
 
   public constructor(private readonly repository: AnalysisJobRepository, private readonly provider: RepositoryProvider, options: AnalysisJobRunnerOptions = {}) {
     this.options = {
@@ -119,6 +129,7 @@ export class AnalysisJobRunner {
     if (job.status === "completed" || job.status === "failed" || job.status === "expired" || job.status === "cancelled") return job;
     this.controllers.get(jobId)?.abort();
     this.queued.delete(jobId);
+    this.notifyIfIdle();
     jobTokenRegistry.delete(jobId);
     return this.repository.updateJob(jobId, {
       status: "cancelled",
@@ -150,7 +161,10 @@ export class AnalysisJobRunner {
   }
 
   public async waitForIdle(): Promise<void> {
-    while (this.queued.size || this.running.size) await this.options.sleep(0);
+    if (this.queued.size === 0 && this.running.size === 0) return;
+    return new Promise<void>((resolve) => {
+      this.idleWaiters.add(resolve);
+    });
   }
 
   private scheduleDrain(): void {
@@ -169,6 +183,7 @@ export class AnalysisJobRunner {
       this.queued.delete(jobId);
       void this.runWithSlot(jobId).catch(() => {}).finally(() => this.scheduleDrain());
     }
+    this.notifyIfIdle();
   }
 
   private async runWithSlot(jobId: string): Promise<void> {
@@ -178,6 +193,7 @@ export class AnalysisJobRunner {
     } finally {
       this.running.delete(jobId);
       this.controllers.delete(jobId);
+      this.notifyIfIdle();
     }
   }
 

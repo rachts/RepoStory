@@ -37,6 +37,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   private readonly entries = new Map<string, { lastAccessed: number; expiresAt: number }>();
   private readonly activeAnalysisIds = new Set<string>();
   private readonly retiredAnalysisIds = new Set<string>();
+  private readonly inFlightJobCreations = new Map<string, Promise<{ job: DurableAnalysisJob; created: boolean }>>();
   private readonly maxAnalyses: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -93,9 +94,26 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   }
 
   public async createOrReuseJob(job: DurableAnalysisJob): Promise<{ job: DurableAnalysisJob; created: boolean }> {
-    const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
-    if (reusable) return { job: reusable, created: false };
-    return { job: await this.createJob(job), created: true };
+    this.purgeExpired();
+    const key = `${job.ownerId}:${job.cacheKey}`;
+    const inFlight = this.inFlightJobCreations.get(key);
+    if (inFlight) {
+      const result = await inFlight;
+      return { job: result.job, created: false };
+    }
+
+    const creationPromise = (async () => {
+      const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
+      if (reusable) return { job: reusable, created: false };
+      return { job: await this.createJob(job), created: true };
+    })();
+
+    this.inFlightJobCreations.set(key, creationPromise);
+    try {
+      return await creationPromise;
+    } finally {
+      this.inFlightJobCreations.delete(key);
+    }
   }
 
   public async getJob(jobId: string, ownerId?: string): Promise<DurableAnalysisJob | undefined> {
