@@ -375,3 +375,6 @@ export function normalizeProjectExplanation(raw: unknown): unknown {
 
   return result;
 }
+
+export const normalizeExplanationCandidate = normalizeProjectExplanation;
+

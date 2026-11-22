@@ -21,7 +21,33 @@ Branch: `fix/analysis-reliability`
 | **Fix 12** | Atomic `createOrReuseJob` with unique constraint & event-driven idle wait | Verified | `8546c80` | `tests/unit/atomic-job-dedup.test.ts` | No UI surface (concurrency and DB locking) | Migration 007 partial unique index prevents race conditions; replaced busy-spin with event-driven wait. |
 | **Fix 13** | Expose worker heartbeat status & display worker offline indicator | Verified | `be4547b` | `tests/unit/worker-heartbeat-status.test.ts`, `tests/component/repo-analysis.test.tsx` | `audit-evidence/16-phase5-worker-offline-indicator.png` | Surfaces `workerStatus` ('active'/'offline'/'idle') and shows non-blocking status pill when worker is stalled. |
 | **Fix 14** | Surface diagram availability reasons & synthesize structure fallback diagram | Verified | `dd8a1d6` | `tests/unit/diagram-availability-empty-state.test.tsx`, `tests/component/repo-analysis.test.tsx` | `audit-evidence/17-phase5-diagram-fallback.png` | Explains missing diagram types clearly and provides on-demand synthesized directory structure diagram. |
-| **Item 2** | AI explanation schema normalizer, single retry, cut-off detection & neutral UI fallback | Verified | `230072a` | `tests/unit/sanitize-json-response.test.ts`, `tests/unit/ai-explanation-normalize.test.ts`, `tests/unit/ai-explanation.test.ts`, `tests/component/project-explanation-panel.test.tsx` | `audit-evidence/18-ai-explanation-rendered.png`, `audit-evidence/19-ai-explanation-neutral-fallback.png` | Strips markdown fences, normalizes bounds, clamps integers, fixes enums, retries once on schema error, neutral notice for retryable AI errors. |
+| **Item 2** | AI explanation schema normalizer, single retry, cut-off detection & neutral UI fallback | Verified | `f13c969` | `tests/unit/sanitize-json-response.test.ts`, `tests/unit/ai-explanation-normalize.test.ts`, `tests/unit/ai-explanation.test.ts`, `tests/component/project-explanation-panel.test.tsx` | `audit-evidence/18-ai-explanation-rendered.png`, `audit-evidence/19-ai-explanation-neutral-fallback.png`, `audit-evidence/20-weathergpt-ai-explanation-rendered.png` | Strips markdown fences, normalizes bounds, clamps integers, fixes enums, retries once on schema error, neutral notice for retryable AI errors. |
+
+---
+
+## AI Explanation Diagnostic Report (Item 2)
+
+- **Configured Model**: `openai/gpt-oss-120b` (confirmed in `STRICT_STRUCTURED_OUTPUT_MODELS` and `.env.local`).
+- **Observed Mode**: `strict-json-schema` (no provider 400/422 rejection on initial schema submission, no downgrade to `json-object-fallback`).
+- **Root Cause Classification**: **Branch A (Bound Violations under Strict Mode)**.
+  - In repositories without explicit security/authentication controls (such as `WEATHERGPT`), the model produced an empty string `""` for `securityAndAuthentication.plainEnglish`.
+  - Because `toGroqSchema()` removes `minLength: 1` before sending schema to Groq, Groq accepted the empty string, but Zod rejected it with `too_small`.
+  - Additionally, Groq's multi-turn completion endpoint validates assistant messages against the strict JSON Schema, causing multi-turn retry with the failing assistant message to be rejected with 400 `json_validate_failed`.
+- **Fix Applied**:
+  1. Updated system prompt with explicit instructions for empty sections: `"If a section has no supporting evidence, leave its array empty or describe the uncertainty in knownLimitations. If security or authentication controls were not confirmed in the repository, describe that status in securityAndAuthentication.plainEnglish. Never return empty strings, keep prose concise, at most 10 evidence IDs per item."`
+  2. Refactored corrective retry in `src/infrastructure/ai/groq-client.ts`: appends the correction note (`failingFields` paths and issue codes only) to the user message instead of passing an unvalidated assistant message, preventing Groq's 400 rejection.
+  3. Enforced `remainingBudgetMs > config.timeoutMs * 0.4` condition before attempting a retry.
+  4. Exported `normalizeExplanationCandidate` in `src/domain/ai-explanation-normalize.ts` and `src/domain/ai-explanation.ts`.
+  5. Preserved graceful neutral UI fallback (`.is-neutral`) and active "Try again" CTA for transient AI errors, keeping red error styles strictly for config/auth issues.
+- **Tests**:
+  - `tests/unit/sanitize-json-response.test.ts` (7 tests)
+  - `tests/unit/ai-explanation-normalize.test.ts` (11 tests)
+  - `tests/unit/ai-explanation.test.ts` (13 tests)
+  - `tests/component/project-explanation-panel.test.tsx` (6 tests)
+- **Browser Verification**:
+  - Live rendering on `https://github.com/rachts/WEATHERGPT` verified: title rendered as `"WEATHERGPT"`, summary rendered, diagrams interactive, zero error banner.
+  - Screenshot: `audit-evidence/20-weathergpt-ai-explanation-rendered.png`.
+- **Groq API Calls Used**: 3 calls (budget: $\le 10$).
 
 ---
 

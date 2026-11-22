@@ -342,7 +342,7 @@ function toGroqSchema(value: unknown): Record<string, unknown> {
 
 export const groqProjectExplanationJsonSchema = toGroqSchema(projectExplanationJsonSchema);
 
-import { normalizeProjectExplanation } from "./ai-explanation-normalize";
+import { normalizeExplanationCandidate, normalizeProjectExplanation } from "./ai-explanation-normalize";
 
-export { normalizeProjectExplanation, normalizeProjectExplanation as sanitizeProjectExplanation };
+export { normalizeProjectExplanation, normalizeExplanationCandidate, normalizeProjectExplanation as sanitizeProjectExplanation };
 
