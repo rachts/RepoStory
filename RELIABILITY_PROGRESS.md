@@ -7,14 +7,14 @@ Branch: `fix/analysis-reliability`
 | Item | Description | Status | Commit Hash | Evidence / Notes |
 |------|-------------|--------|-------------|-------------------|
 | **Phase 1** | Pipeline stream error handling, watchdog, worker timeout, and heartbeats | Verified | `736546a`, `52f748c`, `342a7ca` | Phase 1 committed |
-| **Item 0** | Phase 1 follow-up checks (null heartbeat fallback, no revival on failed, runner early-exit, socket cancel on watchdog, cleanup finally, unhandledRejection decision, browser E2E) | Verified | Pending commit | All checks passed, unit tests added, ADR 008 created, browser E2E verified with 3 screenshots |
-| **Fix 4** | Byte-level progress in `archive-extractor.ts` & `github-provider.ts` (content-length vs chunked curve, 45-60%) | Todo | | |
-| **Fix 5** | Polling cap & configurable timeout in `RepoAnalysis.tsx` with Retry CTA | Todo | | |
-| **Fix 6** | `render.yaml` worker env vars with `sync: false`, update `DEPLOYMENT.md` (no plan change) | Todo | | |
-| **Fix 7** | Lower `MAX_HEAP_BYTES` to 350MB, yield event loop in AST parse loop | Todo | | |
-| **Fix 8** | Private-repo tokens encrypted (AES-GCM) in queue mode | Todo | | |
-| **Fix 9** | Pre-snapshot cache check in `pipeline.ts` with ref lookup | Todo | | |
-| **Fix 10** | Persist remapped diagrams & preserve edits on cache hit | Todo | | |
+| **Item 0** | Phase 1 follow-up checks (null heartbeat fallback, no revival on failed, runner early-exit, socket cancel on watchdog, cleanup finally, unhandledRejection decision, browser E2E) | Verified | `42b6268` | All checks passed, unit tests added, ADR 008 created, browser E2E verified with 3 screenshots |
+| **Fix 4** | Byte-level progress in `archive-extractor.ts` & `github-provider.ts` (content-length vs chunked curve, 45-60%) | Verified | `06cad30` | Monotonic 45-60% progress, chunked asymptotic curve, 1s throttle; screenshots: 11-phase2-progress-content-length.png, 12-phase2-progress-chunked.png |
+| **Fix 5** | Polling cap & configurable timeout in `RepoAnalysis.tsx` with Retry CTA | Verified | `62ceeda` | 3m default cap, configurable via prop/env, 'Analysis timed out. Try again' with Retry CTA; screenshot: 13-phase2-polling-timeout-cta.png |
+| **Fix 6** | `render.yaml` worker env vars with `sync: false`, update `DEPLOYMENT.md` (no plan change) | Verified | `b40b772` | All worker env vars aligned with code, sync: false set, DEPLOYMENT.md updated, valid YAML confirmed, plan sizing recommendations documented |
+| **Fix 7** | Lower `MAX_HEAP_BYTES` to 350MB, yield event loop in AST parse loop | Verified | `4bdbb29` | Lowered DEFAULT_MAX_HEAP_BYTES to 350MB, yielded event loop every 10 files in AST loops via setImmediate; tested in tests/unit/ast-event-loop-yield.test.ts |
+| **Fix 8** | Private-repo tokens encrypted (AES-GCM) in queue mode | Verified | `68fcfc4` | AES-256-GCM encryption for queue tokens, secure cacheStore fallback transport, zero token leak in logs/API; screenshot: 14-phase3-private-repo-authenticated.png |
+| **Fix 9** | Pre-snapshot cache check in `pipeline.ts` with ref lookup | Verified | `347aa73` | Added resolveCommitSha, pre-snapshot cache check before getSnapshot; verified 0 tree/archive calls on cache hit in tests/unit/pre-snapshot-cache-lookup.test.ts |
+| **Fix 10** | Persist remapped diagrams & preserve edits on cache hit | Verified | `6efc86b` | Remapped unique diagram IDs, saved to store & repository on cache hit, merged user edits from cacheStore, verified /api/analysis/[id]/diagrams > 0; screenshot: 15-phase4-cache-hit-diagrams.png |
 | **Fix 11** | Jittered rate-limit backoff in GitHub dispatch without 100ms cap | Todo | | |
 | **Fix 12** | Atomic `createOrReuseJob` with unique constraint / ON CONFLICT, event wait in `waitForIdle` | Todo | | |
 | **Fix 13** | Last worker heartbeat in job status response, UI worker offline indicator | Todo | | |
@@ -41,4 +41,41 @@ Branch: `fix/analysis-reliability`
 - Browser E2E verification:
   - Stalled archive download: watchdog triggered at 3s with `ARCHIVE_DOWNLOAD_STALLED`, UI rendered "The analysis stopped early." / `Archive download stalled: no data received for 3s.` with actionable Retry CTA. Verified clicking "Retry analysis" resets state to queued/fetching. Captured screenshots `08-phase1-stalled-download-error.png` and `09-phase1-stalled-download-retried.png`.
   - Worker killed mid-job: killed worker process mid-analysis, simulated stale heartbeat, verified polling route swept job to `failed` (`JOB_STALLED`, `retryable: true`), and UI reflected stopped state with Retry CTA. Captured screenshot `10-phase1-worker-killed-stalled.png`.
+
+### Phase 2: Progress and UI
+- **Fix 4**: Added monotonic byte-level and time-based progress curve (45% -> 60%) to `extractRepositoryArchive` with throttle rate of ~1/s. For archives with `Content-Length`, mapped ratio to 45-60%. For chunked archives without `Content-Length`, used asymptotic curve and byte factor, strictly capped at 60%. Tested both paths in `tests/unit/archive-extractor-reliability.test.ts`. Browser E2E verified with screenshots `11-phase2-progress-content-length.png` and `12-phase2-progress-chunked.png`.
+- **Fix 5**: Implemented 3-minute polling timeout in `RepoAnalysis.tsx`, configurable via `maxPollingDurationMs` prop and `NEXT_PUBLIC_ANALYSIS_POLL_TIMEOUT_MS` env. Displays title "Analysis timed out. Try again" with message and actionable "Retry analysis" CTA button. Tested via component tests in `tests/component/repo-analysis.test.tsx` and browser E2E in `scripts/verify-phase2-browser-e2e.ts`. Captured screenshot `13-phase2-polling-timeout-cta.png`.
+
+- **Fix 7**:
+  - Defined `DEFAULT_MAX_HEAP_BYTES = 350 * 1024 * 1024` (350 MB) in `src/shared/limits.ts`.
+  - Updated `src/infrastructure/streaming/archive-extractor.ts`, `src/infrastructure/providers/github-provider.ts`, and `.env.example` to default to 350 MB.
+  - Implemented event loop yielding (`await new Promise((resolve) => setImmediate(resolve))`) every 10 files during AST parsing in `src/application/pipeline.ts` and `src/application/analysis/streaming-analyzer.ts`.
+  - Added unit tests in `tests/unit/ast-event-loop-yield.test.ts` verifying that event loop turns and simulated worker heartbeat updates advance during AST parsing of 35+ files without starvation.
+- **Fix 8**:
+  - Created `src/infrastructure/jobs/job-token-registry.ts` implementing AES-256-GCM authenticated encryption/decryption with random 12-byte IV per payload, auth tag verification, and automatic TTL expiration.
+  - Added unit tests in `tests/unit/job-token-encryption.test.ts` verifying correct decryption, wrong key rejection, tampered ciphertext/tag/IV rejection, production `CONFIG_ERROR` on missing secret key, and TTL expiration.
+  - In `src/app/api/analyze/route.ts`, encrypted private repo tokens before enqueuing and stored in `cacheStore` under `job-token:<jobId>` with 15-minute TTL.
+  - Added migration `supabase/migrations/006_job_queue_payload.sql` for queue payloads.
+  - In `src/worker.ts` and `analysis-job-runner.ts`, decrypted token for authenticated GitHub requests and ensured tokens are deleted from both memory and `cacheStore` upon completion, failure, cancellation, or crash.
+  - Fixed `github-provider.ts` so `isCodeload` only applies to archive stage, ensuring `authorization` headers are correctly sent on API metadata and contents requests.
+  - Browser E2E verified in `scripts/verify-phase3-fix8-browser.ts`: successfully analyzed private repository with token in queue mode, verified UI renders completed diagrams, captured screenshot `14-phase3-private-repo-authenticated.png`, and confirmed ZERO raw token occurrences in stdout, stderr, or API responses.
+- **Fix 6**:
+  - Aligned all worker and web service environment variables in `render.yaml` with the exact keys consumed in code (`REPO_STORY_JOB_STORE`, `REPO_STORY_QUEUE_MODE`, `REPO_STORY_CACHE_STORE`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `GITHUB_TOKENS`, `GROQ_API_KEY`, `REPO_STORY_TOKEN_ENCRYPTION_KEY`, worker tuning parameters).
+  - Explicitly marked all credential and secret variables with `sync: false` so secrets are never synced from git.
+  - Allowed both `SUPABASE_SECRET_KEY` and `SUPABASE_SERVICE_ROLE_KEY` in `src/shared/config.ts` and `src/config/production-guards.ts` for maximum environment compatibility.
+  - Updated `DEPLOYMENT.md` with complete environment variable specifications, security notes, and step-by-step Render deployment runbook.
+  - Validated YAML syntax via Ruby YAML parser.
+  - Sizing & Plan Recommendations: Render free web service plan has 512MB RAM and sleeps after 15 minutes of inbound HTTP inactivity. For production, persistent background worker requires at least 1 GB RAM (e.g. Starter/Standard plan) and no idle spindown, or a dedicated Background Worker service (`type: worker`). Retained `plan: free` in `render.yaml` to comply with guardrails (no plan changes that cost money).
+
+- **Fix 9**:
+  - Implemented lightweight `resolveCommitSha` in `src/infrastructure/providers/github-provider.ts` via GitHub commit ref API.
+  - Added pre-snapshot cache check in `src/application/pipeline.ts` to query cache before calling `getSnapshot`.
+  - Added unit tests in `tests/unit/pre-snapshot-cache-lookup.test.ts` verifying that cached analyses avoid tree and archive downloads completely.
+- **Fix 10**:
+  - Remapped unique diagram IDs on cache hits and persisted remapped diagrams to `repo_story_diagrams` and `analysisStore`.
+  - Implemented `mergeDiagramEdits` in `src/application/diagram-edits.ts` to merge user customizations (labels, visibility, descriptions) into base diagrams.
+  - Recorded diagram edits in `cacheStore` under `${owner}/${repo}@${commitSha}:diagram-edits` on `PATCH /api/diagrams/[diagramId]`.
+  - Added fallback to `analysisStore` in `/api/analysis/[analysisId]/diagrams` and `/api/analysis/[analysisId]` if repository diagrams query is empty.
+  - Verified with unit tests in `tests/unit/cache-diagram-persistence.test.ts` and automated browser E2E test in `scripts/verify-phase4-fix10-browser.ts` (screenshot: `15-phase4-cache-hit-diagrams.png`).
+
 
