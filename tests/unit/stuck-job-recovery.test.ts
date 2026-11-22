@@ -81,4 +81,38 @@ describe("stuck job recovery and retryable expiration", () => {
     expect(body.error?.message).toBe("Analysis worker stopped responding");
     expect(body.error?.retryable).toBe(true);
   });
+
+  it("does not mark a job failed if heartbeatAt is null but updatedAt is fresh (legacy pre-migration 005 jobs)", async () => {
+    const store = new InMemoryAnalysisStore({ maxAnalyses: 5, ttlMs: 60_000 });
+    const freshUpdated = new Date(Date.now() - 30 * 1000).toISOString(); // 30 seconds ago
+    await store.createJob(createJob({
+      jobId: "legacy-fresh-job",
+      status: "fetching",
+      heartbeatAt: undefined,
+      updatedAt: freshUpdated,
+    }));
+
+    const recovered = await (store as unknown as { recoverStuckJobs: (now?: number, timeoutMs?: number) => Promise<AnalysisJobRecord[]> }).recoverStuckJobs();
+    expect(recovered.length).toBe(0);
+
+    const job = await store.getJob("legacy-fresh-job", "owner-1");
+    expect(job?.status).toBe("fetching");
+  });
+
+  it("marks a legacy pre-migration 005 job failed if heartbeatAt is null AND updatedAt is stale", async () => {
+    const store = new InMemoryAnalysisStore({ maxAnalyses: 5, ttlMs: 60_000 });
+    const staleUpdated = new Date(Date.now() - 3 * 60 * 1000).toISOString(); // 3 minutes ago
+    await store.createJob(createJob({
+      jobId: "legacy-stale-job",
+      status: "fetching",
+      heartbeatAt: undefined,
+      updatedAt: staleUpdated,
+    }));
+
+    const recovered = await (store as unknown as { recoverStuckJobs: (now?: number, timeoutMs?: number) => Promise<AnalysisJobRecord[]> }).recoverStuckJobs();
+    expect(recovered.length).toBe(1);
+    expect(recovered[0]?.jobId).toBe("legacy-stale-job");
+    expect(recovered[0]?.status).toBe("failed");
+    expect(recovered[0]?.error?.code).toBe("JOB_STALLED");
+  });
 });

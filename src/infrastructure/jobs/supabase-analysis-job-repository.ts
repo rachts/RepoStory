@@ -277,7 +277,7 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveAnalysisResult(result: AnalysisResult, ownerId?: string): Promise<boolean> {
     const job = await this.getJobByAnalysisId(result.id, ownerId) ?? await this.job(result.id, ownerId);
-    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return false;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested)) return false;
     if (job && ownerId && job.ownerId !== ownerId) return false;
     await this.request("saving analysis result", "repo_story_results", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ analysis_id: result.id, owner_id: job?.ownerId ?? ownerId ?? "system", result: redactPathValues(result), updated_at: nowIso() }) });
     if (job && job.analysisId !== result.id) await this.upsertJob({ ...job, analysisId: result.id, updatedAt: nowIso() });
@@ -294,7 +294,7 @@ export class SupabaseAnalysisJobRepository implements AnalysisJobRepository {
 
   public async saveExplanation(analysisId: string, explanation: ProjectExplanation, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested) return;
+    if (!job || job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested) return;
     await this.request("saving explanation", "repo_story_explanations", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ analysis_id: analysisId, owner_id: job.ownerId, explanation: redactPathValues(explanation), unavailable: null, updated_at: nowIso() }) });
   }
 
