@@ -1,8 +1,15 @@
 import { AppError } from "@/domain/errors";
 
+function getApiBaseUrl(): string {
+  if (process.env.NODE_ENV !== "production" && process.env.GITHUB_API_BASE_URL) {
+    return process.env.GITHUB_API_BASE_URL.replace(/\/+$/, "");
+  }
+  return "https://api.github.com";
+}
+
 /**
  * Builds and strictly validates GitHub API URLs.
- * Defense-in-depth: enforces that host is always api.github.com and path begins with /repos/.
+ * Defense-in-depth: enforces that host is always api.github.com (or test override) and path begins with /repos/.
  */
 export function buildSafeGitHubApiUrl(
   pathOrOwner: string,
@@ -10,6 +17,7 @@ export function buildSafeGitHubApiUrl(
   pathSuffix = "",
   searchParams?: Record<string, string>,
 ): URL {
+  const base = getApiBaseUrl();
   let url: URL;
 
   if (repo === undefined) {
@@ -23,7 +31,7 @@ export function buildSafeGitHubApiUrl(
     }
     const rawPath = pathOrOwner.startsWith("/") ? pathOrOwner : `/${pathOrOwner}`;
     try {
-      url = new URL(`https://api.github.com${rawPath}`);
+      url = new URL(`${base}${rawPath}`);
     } catch {
       throw new AppError({
         code: "INVALID_URL",
@@ -38,7 +46,7 @@ export function buildSafeGitHubApiUrl(
     const cleanSuffix = pathSuffix.startsWith("/") ? pathSuffix : (pathSuffix ? `/${pathSuffix}` : "");
 
     try {
-      url = new URL(`https://api.github.com/repos/${encodedOwner}/${encodedRepo}${cleanSuffix}`);
+      url = new URL(`${base}/repos/${encodedOwner}/${encodedRepo}${cleanSuffix}`);
     } catch {
       throw new AppError({
         code: "INVALID_URL",
@@ -48,10 +56,11 @@ export function buildSafeGitHubApiUrl(
     }
   }
 
-  if (url.hostname.toLowerCase() !== "api.github.com") {
+  const expectedHost = new URL(base).hostname.toLowerCase();
+  if (url.hostname.toLowerCase() !== expectedHost) {
     throw new AppError({
       code: "INVALID_URL",
-      message: "Target host must be api.github.com.",
+      message: `Target host must be ${expectedHost}.`,
       retryable: false,
     });
   }

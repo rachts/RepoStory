@@ -46,6 +46,7 @@ lerna-debug.log*
 
 # OS and local editor files
 .DS_Store
+.vscode/
 *.pem
 *.swp
 *.swo

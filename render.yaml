@@ -8,6 +8,30 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 20.3.0
+      - key: REPO_STORY_JOB_STORE
+        value: supabase
+      - key: REPO_STORY_QUEUE_MODE
+        value: supabase
+      - key: REPO_STORY_CACHE_STORE
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_ANON_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_TOKENS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: REPO_STORY_TOKEN_ENCRYPTION_KEY
+        sync: false
 
   - type: web
     name: repostory-worker
@@ -18,4 +42,35 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 20.3.0
+      - key: REPO_STORY_JOB_STORE
+        value: supabase
+      - key: REPO_STORY_QUEUE_MODE
+        value: supabase
+      - key: REPO_STORY_CACHE_STORE
+        value: supabase
+      - key: SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_TOKENS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: REPO_STORY_TOKEN_ENCRYPTION_KEY
+        sync: false
+      - key: WORKER_CONCURRENCY
+        value: "2"
+      - key: WORKER_POLL_INTERVAL_MS
+        value: "1000"
+      - key: WORKER_HEARTBEAT_INTERVAL_MS
+        value: "15000"
+      - key: WORKER_HEARTBEAT_TIMEOUT_MS
+        value: "120000"
+
 

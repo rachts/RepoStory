@@ -341,3 +341,8 @@ function toGroqSchema(value: unknown): Record<string, unknown> {
 }
 
 export const groqProjectExplanationJsonSchema = toGroqSchema(projectExplanationJsonSchema);
+
+import { normalizeExplanationCandidate, normalizeProjectExplanation } from "./ai-explanation-normalize";
+
+export { normalizeProjectExplanation, normalizeExplanationCandidate, normalizeProjectExplanation as sanitizeProjectExplanation };
+

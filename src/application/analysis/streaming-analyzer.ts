@@ -47,6 +47,7 @@ export class TypeScriptAstStreamingAnalyzer implements StreamingAnalyzer {
 
   public async analyze(fileStream: AsyncIterable<RepositoryFile>): Promise<AnalysisFinding[]> {
     const findings: AnalysisFinding[] = [];
+    let parsedCount = 0;
     for await (const file of fileStream) {
       if (!file.content) continue;
       if (!/\.(tsx?|mts|cts)$/i.test(file.path)) continue;
@@ -57,6 +58,11 @@ export class TypeScriptAstStreamingAnalyzer implements StreamingAnalyzer {
         ts.ScriptTarget.Latest,
         true,
       );
+
+      parsedCount += 1;
+      if (parsedCount % 10 === 0) {
+        await new Promise((resolve) => setImmediate(resolve));
+      }
 
       ts.forEachChild(sourceFile, (node) => {
         if (ts.isImportDeclaration(node)) {

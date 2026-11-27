@@ -13,7 +13,7 @@ function isSameOrigin(request: NextRequest): boolean {
   }
 }
 
-export function middleware(request: NextRequest): NextResponse {
+export function proxy(request: NextRequest): NextResponse {
   const origin = request.headers.get("origin");
   const isApi = request.nextUrl.pathname.startsWith("/api/");
   const requestId = request.headers.get("x-request-id") || crypto.randomUUID();
@@ -73,3 +73,5 @@ export function middleware(request: NextRequest): NextResponse {
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
 };
+
+export { proxy as middleware };
