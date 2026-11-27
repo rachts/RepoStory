@@ -24,8 +24,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   if (!analysis) return jsonResponse({ error: { code: "ANALYSIS_NOT_FOUND", message: "Analysis result not found.", retryable: false } }, { status: 404 });
 
   const diagrams = await analysisRepository.listAnalysisDiagrams(analysisId, identity.value.ownerId);
+  const resolvedDiagrams = diagrams.length > 0 ? diagrams : (analysis.diagrams ?? []);
   const explanation = await analysisRepository.getExplanation(analysisId, identity.value.ownerId);
   const explanationUnavailable = await analysisRepository.getExplanationUnavailable(analysisId, identity.value.ownerId);
 
-  return jsonResponse(redactPathValues({ ...analysis, diagrams, ...(explanation ? { explanation } : {}), ...(explanationUnavailable ? { explanationUnavailable } : {}) }));
+  return jsonResponse(redactPathValues({ ...analysis, diagrams: resolvedDiagrams, ...(explanation ? { explanation } : {}), ...(explanationUnavailable ? { explanationUnavailable } : {}) }));
 }
