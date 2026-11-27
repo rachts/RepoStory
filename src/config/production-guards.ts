@@ -79,7 +79,7 @@ export function assertProductionGuards(
   // 3. If Supabase is chosen, credentials must be present
   if (customEnv.REPO_STORY_JOB_STORE === "supabase" || customEnv.REPO_STORY_QUEUE_MODE === "supabase") {
     const hasSupabaseUrl = Boolean(customEnv.SUPABASE_URL?.trim() || customEnv.NEXT_PUBLIC_SUPABASE_URL?.trim());
-    const hasSupabaseKey = Boolean(customEnv.SUPABASE_SECRET_KEY?.trim());
+    const hasSupabaseKey = Boolean(customEnv.SUPABASE_SECRET_KEY?.trim() || customEnv.SUPABASE_SERVICE_ROLE_KEY?.trim());
 
     if (!hasSupabaseUrl || !hasSupabaseKey) {
       const errorMsg = "[RepoStory Config Error] In production with Supabase mode, SUPABASE_URL and SUPABASE_SECRET_KEY are required.";

@@ -27,6 +27,7 @@ export interface RequestIdentity {
   isAnonymous: boolean;
   setCookie: boolean;
   anonymousCookieToMigrate?: string;
+  accessToken?: string;
 }
 
 export async function resolveRequestIdentity(
@@ -37,12 +38,18 @@ export async function resolveRequestIdentity(
   const explicitAuth = request.headers.get("x-user-id")?.trim();
   const authHeader = request.headers.get("authorization")?.trim();
   let bearerUser: string | undefined;
+  let bearerGithubToken: string | undefined;
   if (authHeader?.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
     if (token && (token.startsWith("user_") || token.startsWith("usr_"))) {
       bearerUser = token;
+    } else if (token && /^(gh[pousrl]_[A-Za-z0-9_]{4,}|github_pat_[A-Za-z0-9_]{4,})/.test(token)) {
+      bearerGithubToken = token;
     }
   }
+
+  const customHeaderToken = request.headers.get("x-github-token")?.trim();
+  let jwtAccessToken: string | undefined;
 
   const cookieHeader = request.headers.get("cookie") || "";
   const nextAuthCookie = cookieHeader.match(/(?:^|;\s*)(?:__Secure-)?next-auth\.session-token=([^;]+)/)?.[1];
@@ -52,13 +59,18 @@ export async function resolveRequestIdentity(
       const parts = nextAuthCookie.split(".");
       if (parts.length === 3 && parts[1]) {
         const payloadJson = Buffer.from(parts[1], "base64url").toString("utf8");
-        const payload = JSON.parse(payloadJson) as { sub?: string; id?: string };
+        const payload = JSON.parse(payloadJson) as { sub?: string; id?: string; accessToken?: string };
         sessionUser = payload.sub || payload.id;
+        if (typeof payload.accessToken === "string") {
+          jwtAccessToken = payload.accessToken;
+        }
       }
     } catch {
       // Ignore malformed token
     }
   }
+
+  const effectiveAccessToken = customHeaderToken || bearerGithubToken || jwtAccessToken;
 
   const anonCookie = cookieHeader.match(new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([^;]+)`))?.[1];
   const validAnonCookie = anonCookie && /^[A-Za-z0-9_-]{16,128}$/.test(anonCookie) ? anonCookie : undefined;
@@ -80,6 +92,7 @@ export async function resolveRequestIdentity(
       isAuthenticated: true,
       isAnonymous: false,
       setCookie: false,
+      accessToken: effectiveAccessToken,
     });
   }
 
@@ -101,6 +114,7 @@ export async function resolveRequestIdentity(
       isAuthenticated: false,
       isAnonymous: true,
       setCookie: false,
+      accessToken: effectiveAccessToken,
     });
   }
 
@@ -109,6 +123,7 @@ export async function resolveRequestIdentity(
     isAuthenticated: false,
     isAnonymous: true,
     setCookie: true,
+    accessToken: effectiveAccessToken,
   });
 }
 

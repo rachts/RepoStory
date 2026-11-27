@@ -2,6 +2,7 @@ import type { AnalysisError, AnalysisResult, AnalysisCoverage, DiagramAvailabili
 import type { RepositoryFile, RepositoryProvider, RepositoryReference } from "@/domain/repository";
 import { repositoryStructureDiagram, systemOverviewDiagram } from "@/analysis/diagrams";
 import { analyzeDirectories, analyzeEntryPoints, analyzePhase3, analyzeTechnologies, apiRequestFlowDiagram, authenticationFlowDiagram, generateArchitectureStory } from "@/analysis";
+import { mergeDiagramEdits } from "@/application/diagram-edits";
 import { filterFiles } from "@/analysis/filter-files";
 import { AppError } from "@/domain/errors";
 import type { AnalysisStore } from "@/application/store";
@@ -12,6 +13,7 @@ import { redactPathValues } from "@/shared/redaction";
 import { logger } from "@/shared/logger";
 import { withSpan } from "@/shared/tracer";
 import { repostoryJobsTotal, repostoryJobDurationSeconds } from "@/shared/metrics";
+import ts from "typescript";
 
 export interface AnalysisRunOptions {
   limits?: AnalysisLimits;
@@ -19,9 +21,11 @@ export interface AnalysisRunOptions {
   budget?: AnalysisBudget;
   analysisId?: string;
   signal?: AbortSignal;
+  token?: string;
   files?: RepositoryFile[] | AsyncIterable<RepositoryFile>;
   onProgress?: (progress: { stage: AnalysisResult["stage"]; progress: number; message: string }) => void;
   cacheStore?: import("@/application/cache/cache-store").CacheStore;
+  parseSourceFile?: (fileName: string, content: string) => void | Promise<void>;
 }
 
 function fileBytes(file: RepositoryFile): number {
@@ -53,29 +57,39 @@ function buildCoverage(
   analyzed: readonly RepositoryFile[],
   limits: AnalysisLimits,
   snapshotCoverage?: Partial<AnalysisCoverage>,
+  parseFailures?: string[],
 ): AnalysisCoverage {
   const analyzedPaths = new Set(analyzed.map((file) => file.path));
   let tooLarge = snapshotCoverage?.filesSkippedByReason?.tooLarge ?? 0;
   let unsupported = snapshotCoverage?.filesSkippedByReason?.unsupported ?? 0;
   let limitReached = snapshotCoverage?.filesSkippedByReason?.limitReached ?? 0;
+  const parseFailure = (snapshotCoverage?.filesSkippedByReason?.parseFailure ?? 0) + (parseFailures?.length ?? 0);
   const lfsPointer = snapshotCoverage?.filesSkippedByReason?.lfsPointer ?? 0;
   const submodule = snapshotCoverage?.filesSkippedByReason?.submodule ?? 0;
   const unsupportedEncoding = snapshotCoverage?.filesSkippedByReason?.unsupportedEncoding ?? 0;
   const pathCollision = snapshotCoverage?.filesSkippedByReason?.pathCollision ?? 0;
 
   for (const file of discovered) {
-    if (analyzedPaths.has(file.path)) continue;
+    if (analyzedPaths.has(file.path) || parseFailures?.includes(file.path)) continue;
     if (fileSize(file) > limits.maxFileBytes) tooLarge += 1;
     else if (!isSupportedPath(file.path)) unsupported += 1;
     else limitReached += 1;
   }
 
   const filesSkippedDetails = [...(snapshotCoverage?.filesSkippedDetails ?? [])];
+  if (parseFailures) {
+    for (const path of parseFailures) {
+      filesSkippedDetails.push({ path, reason: "parse-failure" });
+    }
+  }
   const warnings = [...(snapshotCoverage?.warnings ?? [])];
+  if (parseFailures && parseFailures.length > 0) {
+    warnings.push(`Skipped ${parseFailures.length} file(s) due to AST parse failures.`);
+  }
 
   const totalDiscovered = (snapshotCoverage?.filesConsidered !== undefined && snapshotCoverage?.filesSkipped !== undefined)
     ? (snapshotCoverage.filesConsidered + snapshotCoverage.filesSkipped)
-    : Math.max(discovered.length, analyzed.length);
+    : Math.max(discovered.length, analyzed.length + (parseFailures?.length ?? 0));
   const filesSkipped = Math.max(0, totalDiscovered - analyzed.length);
   const analyzedPercent = snapshotCoverage?.analyzedPercent ?? (totalDiscovered > 0 ? Math.round((analyzed.length / totalDiscovered) * 100) : 100);
   const confidence: AnalysisCoverage["analysisConfidence"] =
@@ -88,6 +102,7 @@ function buildCoverage(
       tooLarge,
       unsupported,
       limitReached,
+      ...(parseFailure > 0 ? { parseFailure } : {}),
       ...(lfsPointer > 0 ? { lfsPointer } : {}),
       ...(submodule > 0 ? { submodule } : {}),
       ...(unsupportedEncoding > 0 ? { unsupportedEncoding } : {}),
@@ -98,6 +113,7 @@ function buildCoverage(
     warnings,
     analyzedPercent,
     treeTruncated: snapshotCoverage?.treeTruncated ?? false,
+    unresolvedSubtrees: snapshotCoverage?.unresolvedSubtrees,
     analysisConfidence: confidence,
   };
 }
@@ -126,10 +142,11 @@ export async function runAnalysis(
     createdAt: started,
   };
   store.save(job);
-  const signal = options.signal ?? AbortSignal.timeout(limits.maxAnalysisMs);
+  const timeoutSignal = AbortSignal.timeout(limits.maxAnalysisMs);
+  const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
   const budget = options.budget ?? createAnalysisBudget(limits.maxAnalysisMs, options.now, signal);
   const progress = (stage: AnalysisResult["stage"], progressPercent: number, message: string): void => {
-    job = { ...job, stage, progressPercent, status: "running" };
+    job = { ...job, stage, progressPercent, status: stage === "completed" ? "completed" : "running" };
     store.save(job);
     options.onProgress?.({ stage, progress: progressPercent, message });
   };
@@ -138,7 +155,10 @@ export async function runAnalysis(
     if (error.code === "ANALYSIS_TIMEOUT") {
       finalError = new AppError({
         code: "ANALYSIS_TIMEOUT",
+        stage: "analyze",
         message: `Analysis timed out during stage '${job.stage}'.`,
+        reason: `Analysis execution exceeded time budget during stage '${job.stage}'.`,
+        hint: "Try analyzing a smaller branch or increasing the timeout limit.",
         retryable: false,
         details: { stage: job.stage },
       });
@@ -151,6 +171,9 @@ export async function runAnalysis(
       stage: "completed",
       error: {
         code: finalError.code as AnalysisError["code"],
+        stage: finalError.stage,
+        reason: finalError.reason,
+        hint: finalError.hint,
         message: finalError.message,
         retryable: false,
         details: finalError.details,
@@ -161,25 +184,76 @@ export async function runAnalysis(
   };
 
   const cacheStore = options.cacheStore ?? provider.cacheStore;
-  const isCommitSha = reference.branch && /^[0-9a-f]{40}$/i.test(reference.branch);
+  let resolvedCommitSha: string | undefined =
+    reference.branch && /^[0-9a-f]{40}$/i.test(reference.branch) ? reference.branch : undefined;
 
-  if (isCommitSha && cacheStore) {
-    const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${reference.branch}:analysis`;
+  if (!resolvedCommitSha && provider.resolveCommitSha && !options.files) {
+    try {
+      const shaRes = await provider.resolveCommitSha(reference, {
+        token: options.token,
+        signal,
+      });
+      if (shaRes.ok) {
+        resolvedCommitSha = shaRes.value;
+      }
+    } catch {
+      // Lightweight ref lookup failure is non-fatal; falls through to getSnapshot
+    }
+  }
+
+  const handleCacheHit = async (
+    cached: AnalysisResult,
+    commitSha: string,
+    repositoryOverride?: typeof job.repository,
+  ): Promise<Result<AnalysisResult, AppError>> => {
+    let editedDiagramsByType: Record<string, import("@/domain/diagram").Diagram> | null = null;
+    if (cacheStore) {
+      try {
+        const editsKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${commitSha}:diagram-edits`;
+        editedDiagramsByType = (await cacheStore.get<Record<string, import("@/domain/diagram").Diagram>>(editsKey)) ?? null;
+      } catch {
+        // Fall back to unedited cached diagrams
+      }
+    }
+
+    const remappedDiagrams = (cached.diagrams ?? []).map((diagram) => {
+      let finalDiagram = diagram;
+      if (editedDiagramsByType && editedDiagramsByType[diagram.type]) {
+        finalDiagram = mergeDiagramEdits(diagram, editedDiagramsByType[diagram.type]!);
+      }
+      return {
+        ...finalDiagram,
+        id: opaqueId("diagram"),
+        analysisId: id,
+      };
+    });
+
+    job = {
+      ...cached,
+      id,
+      status: "completed",
+      stage: "completed",
+      progressPercent: 100,
+      diagrams: remappedDiagrams,
+      diagramIds: remappedDiagrams.map((d) => d.id),
+      createdAt: started,
+      completedAt: nowIso(),
+      ...(repositoryOverride ? { repository: repositoryOverride } : {}),
+    };
+    for (const diagram of remappedDiagrams) {
+      store.saveDiagram(diagram);
+    }
+    progress("completed", 100, "Analysis complete (cached)");
+    job.status = "completed";
+    store.save(job);
+    return ok(job);
+  };
+
+  if (resolvedCommitSha && cacheStore) {
+    const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
     const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
     if (cached) {
-      job = {
-        ...cached,
-        id,
-        diagrams: (cached.diagrams ?? []).map((diagram) => ({
-          ...diagram,
-          analysisId: id,
-        })),
-        createdAt: started,
-        completedAt: nowIso(),
-      };
-      store.save(job);
-      progress("completed", 100, "Analysis complete (cached)");
-      return ok(job);
+      return await handleCacheHit(cached, resolvedCommitSha);
     }
   }
 
@@ -202,7 +276,7 @@ export async function runAnalysis(
       progress("fetch-metadata", 12, "Reading repository metadata");
       const snapshot = await withSpan("fetch-metadata", async () => provider.getSnapshot(reference, signal, budget, (p) => {
         progress(p.stage as AnalysisResult["stage"], p.progress, p.message);
-      }));
+      }, { token: options.token }));
       if (!snapshot.ok) return fail(snapshot.error);
       budget.check();
       repository = redactPathValues(snapshot.value.repository, budget);
@@ -213,20 +287,7 @@ export async function runAnalysis(
         const analysisCacheKey = `${reference.owner.toLowerCase()}/${reference.name.toLowerCase()}@${resolvedCommitSha}:analysis`;
         const cached = await cacheStore.get<AnalysisResult>(analysisCacheKey);
         if (cached) {
-          job = {
-            ...cached,
-            id,
-            diagrams: (cached.diagrams ?? []).map((diagram) => ({
-              ...diagram,
-              analysisId: id,
-            })),
-            repository: snapshot.value.repository,
-            createdAt: started,
-            completedAt: nowIso(),
-          };
-          store.save(job);
-          progress("completed", 100, "Analysis complete (cached)");
-          return ok(job);
+          return await handleCacheHit(cached, resolvedCommitSha, snapshot.value.repository);
         }
       }
 
@@ -241,16 +302,44 @@ export async function runAnalysis(
     }
 
     progress("fetch-archive", 45, "Fetching bounded repository content");
-    const files = filterFiles(rawFiles, limits, budget);
+    const rawFiltered = filterFiles(rawFiles, limits, budget);
     budget.check();
+
+    const AST_EVENT_LOOP_YIELD_INTERVAL = 10;
+    const parseSource = options.parseSourceFile ?? ((fileName: string, content: string) => {
+      ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true);
+    });
+
+    const files: RepositoryFile[] = [];
+    const parseFailures: string[] = [];
+    let parsedCount = 0;
+    for (const file of rawFiltered) {
+      budget.check();
+      if (file.content && /\.(tsx?|jsx?|mts|cts)$/i.test(file.path)) {
+        try {
+          await parseSource(file.path, file.content);
+          files.push(file);
+          parsedCount += 1;
+          if (parsedCount % AST_EVENT_LOOP_YIELD_INTERVAL === 0) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+        } catch (parseErr) {
+          logger.warn({ path: file.path, err: parseErr }, "Failed to parse AST for file, skipping");
+          parseFailures.push(file.path);
+        }
+      } else {
+        files.push(file);
+      }
+    }
+
     const totalDiscovered = (snapshotCoverage?.filesConsidered !== undefined && snapshotCoverage?.filesSkipped !== undefined)
       ? (snapshotCoverage.filesConsidered + snapshotCoverage.filesSkipped)
-      : rawFiles.length;
+      : Math.max(rawFiles.length, files.length + parseFailures.length);
     const filesDiscovered = totalDiscovered;
     const filesAnalyzed = files.length;
     const bytesDiscovered = totalFileBytes(rawFiles);
     const bytesAnalyzed = totalFileBytes(files);
-    const coverage: AnalysisCoverage = buildCoverage(rawFiles, files, limits, snapshotCoverage);
+    const coverage: AnalysisCoverage = buildCoverage(rawFiles, files, limits, snapshotCoverage, parseFailures);
     progress("filtering-files", 55, "Filtering for useful repository signal");
     const technologies = redactPathValues(analyzeTechnologies(files, budget), budget);
     budget.check();
@@ -317,10 +406,25 @@ export async function runAnalysis(
   } catch (error) {
     if (error instanceof AppError) return fail(error);
     if (signal?.aborted) {
-      return fail(new AppError({ code: "ANALYSIS_TIMEOUT", message: `Analysis timed out during stage '${job.stage}'.`, retryable: false, details: { stage: job.stage } }));
+      return fail(new AppError({
+        code: "ANALYSIS_TIMEOUT",
+        stage: "analyze",
+        message: `Analysis timed out during stage '${job.stage}'.`,
+        reason: `Analysis execution exceeded time budget during stage '${job.stage}'.`,
+        hint: "Try analyzing a smaller branch or increasing the timeout limit.",
+        retryable: false,
+        details: { stage: job.stage },
+      }));
     }
     logger.error({ analysisId: id, stage: job.stage, err: error }, "[RepoStory] unexpected analysis pipeline error");
-    return fail(new AppError({ code: "ANALYSIS_FAILED", message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.", retryable: true }));
+    return fail(new AppError({
+      code: "ANALYSIS_FAILED",
+      stage: "analyze",
+      message: "The analysis encountered an unexpected server error. Please retry. If it continues, check the server logs.",
+      reason: "Unexpected error during analysis pipeline execution.",
+      hint: "Check server logs or retry the request.",
+      retryable: true,
+    }));
   } finally {
     store.finishAnalysis?.(id);
   }

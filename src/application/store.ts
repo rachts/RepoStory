@@ -37,6 +37,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   private readonly entries = new Map<string, { lastAccessed: number; expiresAt: number }>();
   private readonly activeAnalysisIds = new Set<string>();
   private readonly retiredAnalysisIds = new Set<string>();
+  private readonly inFlightJobCreations = new Map<string, Promise<{ job: DurableAnalysisJob; created: boolean }>>();
   private readonly maxAnalyses: number;
   private readonly ttlMs: number;
   private readonly now: () => number;
@@ -93,9 +94,26 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   }
 
   public async createOrReuseJob(job: DurableAnalysisJob): Promise<{ job: DurableAnalysisJob; created: boolean }> {
-    const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
-    if (reusable) return { job: reusable, created: false };
-    return { job: await this.createJob(job), created: true };
+    this.purgeExpired();
+    const key = `${job.ownerId}:${job.cacheKey}`;
+    const inFlight = this.inFlightJobCreations.get(key);
+    if (inFlight) {
+      const result = await inFlight;
+      return { job: result.job, created: false };
+    }
+
+    const creationPromise = (async () => {
+      const reusable = await this.findReusableJob(job.cacheKey, job.ownerId);
+      if (reusable) return { job: reusable, created: false };
+      return { job: await this.createJob(job), created: true };
+    })();
+
+    this.inFlightJobCreations.set(key, creationPromise);
+    try {
+      return await creationPromise;
+    } finally {
+      this.inFlightJobCreations.delete(key);
+    }
   }
 
   public async getJob(jobId: string, ownerId?: string): Promise<DurableAnalysisJob | undefined> {
@@ -113,6 +131,23 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     const updated = redactPathValues({ ...current, ...patch, updatedAt: patch.updatedAt ?? nowIso() });
     this.durableJobs.set(jobId, structuredClone(updated));
     return structuredClone(updated);
+  }
+
+  public async updateJobIfStatus(
+    jobId: string,
+    patch: AnalysisJobPatch,
+    expectedStatuses: DurableAnalysisJob["status"][],
+    ownerId?: string,
+  ): Promise<{ won: boolean; job?: DurableAnalysisJob }> {
+    const current = this.durableJobs.get(jobId);
+    if (!current || (ownerId && current.ownerId !== ownerId)) {
+      return { won: false };
+    }
+    if (!expectedStatuses.includes(current.status)) {
+      return { won: false, job: structuredClone(current) };
+    }
+    const updated = await this.updateJob(jobId, patch, ownerId);
+    return { won: true, job: updated };
   }
 
   public async findReusableJob(cacheKey: string, ownerId: string, now = Date.now()): Promise<DurableAnalysisJob | undefined> {
@@ -135,11 +170,44 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
     for (const [jobId, job] of this.durableJobs) {
       if (job.status === "expired" || job.status === "cancelled" || job.status === "failed" || job.status === "completed") continue;
       if (new Date(job.expiresAt).getTime() > now) continue;
-      const expired: DurableAnalysisJob = { ...job, status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: false } };
+      const expired: DurableAnalysisJob = { ...job, status: "expired", stage: "completed", progress: 100, message: "This analysis job expired before it completed.", updatedAt: new Date(now).toISOString(), error: { code: "JOB_EXPIRED", message: "This analysis job expired before it completed.", retryable: true } };
       this.durableJobs.set(jobId, expired);
       count += 1;
     }
     return count;
+  }
+
+  public async recoverStuckJobs(now = Date.now(), timeoutMs = 120_000): Promise<DurableAnalysisJob[]> {
+    const recovered: DurableAnalysisJob[] = [];
+    for (const [jobId, job] of this.durableJobs) {
+      if (job.status !== "fetching" && job.status !== "analyzing" && job.status !== "explaining") {
+        continue;
+      }
+      const lastActivityTime = job.heartbeatAt
+        ? new Date(job.heartbeatAt).getTime()
+        : new Date(job.updatedAt || job.createdAt).getTime();
+      if (!isNaN(lastActivityTime) && now - lastActivityTime > timeoutMs) {
+        const failed: DurableAnalysisJob = {
+          ...job,
+          status: "failed",
+          stage: "completed",
+          progress: 100,
+          message: "Analysis worker stopped responding",
+          error: {
+            code: "JOB_STALLED",
+            stage: "analyze",
+            message: "Analysis worker stopped responding",
+            reason: "The background analysis worker stopped reporting heartbeats.",
+            hint: "You can retry this analysis now.",
+            retryable: true,
+          },
+          updatedAt: new Date(now).toISOString(),
+        };
+        this.durableJobs.set(jobId, failed);
+        recovered.push(structuredClone(failed));
+      }
+    }
+    return recovered;
   }
 
   public async deleteExpiredJobs(now = Date.now()): Promise<number> {
@@ -160,7 +228,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
   public async saveAnalysisResult(result: AnalysisResult, ownerId?: string): Promise<boolean> {
     const job = [...this.durableJobs.values()].find((candidate) => candidate.analysisId === result.id || candidate.jobId === result.id);
     if (job && ownerId && job.ownerId !== ownerId) return false;
-    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested)) return false;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested)) return false;
     this.save(result);
     if (job) this.durableJobs.set(job.jobId, structuredClone({ ...job, analysisId: result.id, updatedAt: nowIso() }));
     return true;
@@ -174,7 +242,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
 
   public async saveExplanation(analysisId: string, explanation: ProjectExplanation, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
+    if (!job || job.status === "cancelled" || job.status === "expired" || job.status === "failed" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
     this.explanations.set(analysisId, structuredClone(redactPathValues(explanation)));
     this.explanationUnavailable.delete(analysisId);
     const result = this.jobs.get(analysisId);
@@ -205,7 +273,7 @@ export class InMemoryAnalysisStore implements AnalysisStore, AnalysisJobReposito
 
   public async saveAnalysisDiagram(diagram: Diagram, ownerId?: string): Promise<void> {
     const job = await this.getJobByAnalysisId(diagram.analysisId, ownerId);
-    if (!job || job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || ownerId && job.ownerId !== ownerId) return;
+    if (job && (job.status === "cancelled" || job.status === "expired" || job.cancellationRequested || (ownerId && job.ownerId !== ownerId))) return;
     this.saveDiagram(diagram);
   }
 

@@ -9,6 +9,7 @@ export interface AnalysisJobPatch {
   stage?: AnalysisJobRecord["stage"];
   progress?: number;
   message?: string;
+  heartbeatAt?: string;
   updatedAt?: string;
   expiresAt?: string;
   retryCount?: number;
@@ -27,6 +28,13 @@ export interface AnalysisJobRepository {
   getJobByAnalysisId(analysisId: string, ownerId?: string): Promise<AnalysisJobRecord | undefined>;
   markExpiredJobs(now?: number): Promise<number>;
   deleteExpiredJobs(now?: number): Promise<number>;
+  recoverStuckJobs?(now?: number, timeoutMs?: number): Promise<AnalysisJobRecord[]>;
+  updateJobIfStatus?(
+    jobId: string,
+    patch: AnalysisJobPatch,
+    expectedStatuses: AnalysisJobRecord["status"][],
+    ownerId?: string,
+  ): Promise<{ won: boolean; job?: AnalysisJobRecord }>;
 
   saveAnalysisResult(result: AnalysisResult, ownerId?: string): Promise<boolean>;
   getAnalysisResult(analysisId: string, ownerId?: string): Promise<AnalysisResult | undefined>;

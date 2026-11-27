@@ -2,6 +2,9 @@
   "name": "repo-story",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20.3.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -27,7 +30,7 @@
     "@upstash/ratelimit": "^2.2.0",
     "@xyflow/react": "^12.12.0",
     "groq-sdk": "^1.6.0",
-    "next": "16.4.2",
+    "next": "16.4.6",
     "next-auth": "^4.24.15",
     "pino": "^10.4.0",
     "prom-client": "^15.1.3",

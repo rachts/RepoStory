@@ -2,6 +2,9 @@ import { z } from "zod";
 import { NextResponse } from "next/server";
 import { parseGitHubUrl, validateGitHubBranch } from "@/infrastructure/providers/github-url";
 import { analysisJobRunner, analysisRepository, jobQueue } from "@/composition/container";
+import { jobTokenRegistry } from "@/application/jobs/analysis-job-runner";
+import { encryptToken } from "@/infrastructure/jobs/job-token-registry";
+import { cacheStore } from "@/composition/container";
 import {
   resolveRequestIdentity,
   checkDailyQuota,
@@ -19,8 +22,23 @@ const MAX_REQUEST_BYTES = 8 * 1024;
 const requestSchema = z.object({
   repositoryUrl: z.string().trim().min(1).max(500),
   branch: z.string().trim().min(1).max(255).optional(),
+  githubToken: z.string().trim().min(1).max(500).optional(),
+  token: z.string().trim().min(1).max(500).optional(),
   explanationRequested: z.boolean().optional().default(false),
 }).strict();
+
+export const ANALYSIS_ROUTE_MAX_DURATION_SECONDS = 60;
+export const maxDuration = ANALYSIS_ROUTE_MAX_DURATION_SECONDS;
+
+export function shouldRunInProcessJobs(): boolean {
+  if (process.env.IN_PROCESS_JOBS !== undefined) {
+    return process.env.IN_PROCESS_JOBS.toLowerCase() === "true";
+  }
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
+  return true;
+}
 
 export async function POST(request: Request): Promise<NextResponse> {
   try {
@@ -116,10 +134,23 @@ export async function POST(request: Request): Promise<NextResponse> {
       explanationRequested: input.explanationRequested,
     });
     const job = created.job;
-    if (created.created) {
-      await jobQueue.enqueue(job.jobId);
-      if (serverConfig.queueMode === "memory") {
-        analysisJobRunner.enqueue(job.jobId);
+    const effectiveToken = input.githubToken || input.token || identityResult.value.accessToken;
+    let encryptedPayload: ReturnType<typeof encryptToken> | undefined;
+    if (effectiveToken) {
+      jobTokenRegistry.set(job.jobId, { token: effectiveToken, expiresAt: Date.now() + 15 * 60 * 1000 });
+      encryptedPayload = encryptToken(effectiveToken);
+      try {
+        await cacheStore.set(`job-token:${job.jobId}`, encryptedPayload, 15 * 60 * 1000);
+      } catch (err) {
+        console.error(`[API] Failed to store encrypted token in cacheStore for ${job.jobId}:`, err);
+      }
+    }
+
+    if (created.created || job.status === "queued") {
+      const payload = encryptedPayload ? { encryptedToken: encryptedPayload } : undefined;
+      await jobQueue.enqueue(job.jobId, { payload }).catch(() => {});
+      if (shouldRunInProcessJobs()) {
+        analysisJobRunner.enqueue(job.jobId, effectiveToken ? { token: effectiveToken } : undefined);
       }
     }
     const response = jsonResponse({
